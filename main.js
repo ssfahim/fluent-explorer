@@ -273,9 +273,137 @@ ipcMain.handle('session:load', async () => {
 });
 
 // Network
-ipcMain.handle('net:mount', async (_,loc) => {
-  if(loc.type==='smb'){const url=`smb://${loc.host}/${loc.share}`;return new Promise(res=>{const p=spawn('gio',['mount',url],{stdio:['pipe','pipe','pipe']});let err='';p.stderr.on('data',d=>err+=d);if(loc.user){p.stdin.write(loc.user+'\n');setTimeout(()=>{p.stdin.write((loc.pass||'')+'\n');p.stdin.end()},500)}p.on('close',code=>{if(code===0)res({ok:1,mountPath:`/run/user/${process.getuid()}/gvfs/smb-share:server=${loc.host},share=${loc.share}`});else res({ok:0,error:err||'Failed'})});setTimeout(()=>{try{p.kill()}catch{}res({ok:0,error:'Timeout'})},15000)})}
-  return{ok:0,error:'Unsupported'};
+ipcMain.handle('net:mount', async (_, loc) => {
+  if (loc.type === 'smb') {
+    const host = loc.host;
+    const share = loc.share;
+    const user = loc.user || '';
+    const pass = loc.pass || '';
+    const domain = loc.domain || 'WORKGROUP';
+    const smbUrl = `smb://${host}/${share}`;
+
+    // First check if already mounted via gvfs
+    const uid = process.getuid();
+    const possiblePaths = [
+      `/run/user/${uid}/gvfs/smb-share:server=${host},share=${share}`,
+      `/run/user/${uid}/gvfs/smb-share:server=${host.toLowerCase()},share=${share}`,
+      `/run/user/${uid}/gvfs/smb-share:server=${host},share=${share},user=${user}`,
+    ];
+    for (const mp of possiblePaths) {
+      try { await fs.promises.access(mp); return { ok: 1, mountPath: mp }; } catch {}
+    }
+
+    // Method 1: gio mount with credentials piped via stdin
+    // gio mount prompts: User [user]: / Domain [WORKGROUP]: / Password:
+    const gioResult = await new Promise(resolve => {
+      let args = ['mount'];
+      if (!user) args.push('-a'); // anonymous if no user
+      args.push(smbUrl);
+
+      const proc = spawn('gio', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      let stdout = '', stderr = '';
+      proc.stdout.on('data', d => stdout += d.toString());
+      proc.stderr.on('data', d => stderr += d.toString());
+
+      if (user) {
+        // Pipe credentials in the format gio expects:
+        // echo -e "user\ndomain\npassword\n" | gio mount smb://...
+        proc.stdin.write(user + '\n');
+        proc.stdin.write(domain + '\n');
+        proc.stdin.write(pass + '\n');
+        proc.stdin.end();
+      }
+
+      const timeout = setTimeout(() => { try { proc.kill(); } catch {} resolve({ ok: 0, error: 'Connection timed out (15s)' }); }, 15000);
+
+      proc.on('close', code => {
+        clearTimeout(timeout);
+        if (code === 0) {
+          // Find the actual mount path
+          for (const mp of possiblePaths) {
+            try { fs.accessSync(mp); resolve({ ok: 1, mountPath: mp }); return; } catch {}
+          }
+          // Try listing gvfs mounts to find it
+          try {
+            const gvfsBase = `/run/user/${uid}/gvfs`;
+            const entries = fs.readdirSync(gvfsBase);
+            const match = entries.find(e => e.includes(host) || e.includes(host.toLowerCase()));
+            if (match) { resolve({ ok: 1, mountPath: path.join(gvfsBase, match) }); return; }
+          } catch {}
+          resolve({ ok: 0, error: 'Mounted but could not find gvfs path. Check /run/user/' + uid + '/gvfs/' });
+        } else {
+          let errMsg = stderr.trim() || stdout.trim() || 'gio mount failed (code ' + code + ')';
+          // Clean up common error messages
+          if (errMsg.includes('Location is already mounted')) {
+            // It's already mounted, find the path
+            for (const mp of possiblePaths) {
+              try { fs.accessSync(mp); resolve({ ok: 1, mountPath: mp }); return; } catch {}
+            }
+          }
+          resolve({ ok: 0, error: errMsg, method: 'gio' });
+        }
+      });
+      proc.on('error', e => { clearTimeout(timeout); resolve({ ok: 0, error: 'gio not found: ' + e.message }); });
+    });
+
+    if (gioResult.ok) return gioResult;
+
+    // Method 2: mount.cifs fallback (needs cifs-utils installed, may need sudo)
+    // Try without sudo first (user mounts to /tmp)
+    const mountPoint = `/tmp/winex-smb-${host}-${share.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    try { fs.mkdirSync(mountPoint, { recursive: true }); } catch {}
+
+    const cifsResult = await new Promise(resolve => {
+      const opts = user
+        ? `username=${user},password=${pass},workgroup=${domain},uid=${uid},gid=${process.getgid()}`
+        : `guest,uid=${uid},gid=${process.getgid()}`;
+
+      exec(`mount -t cifs "//${host}/${share}" "${mountPoint}" -o ${opts}`, { timeout: 15000 }, (err, stdout, stderr) => {
+        if (!err) { resolve({ ok: 1, mountPath: mountPoint }); }
+        else { resolve({ ok: 0, error: stderr || err.message, method: 'cifs' }); }
+      });
+    });
+
+    if (cifsResult.ok) return cifsResult;
+
+    // Return combined error info
+    return { ok: 0, error: `gio: ${gioResult.error}\n\nCIFS fallback: ${cifsResult.error}\n\nTips:\n- Check if the server is reachable: ping ${host}\n- Check if smbclient works: smbclient -L ${host} -U ${user || 'guest'}%${pass}\n- Install cifs-utils: sudo apt install cifs-utils\n- For guest access, leave username empty` };
+  }
+
+  if (loc.type === 'nfs') {
+    const mountPoint = `/tmp/winex-nfs-${loc.host}-${(loc.share||'').replace(/[^a-zA-Z0-9]/g, '_')}`;
+    try { fs.mkdirSync(mountPoint, { recursive: true }); } catch {}
+    return new Promise(resolve => {
+      exec(`mount -t nfs "${loc.host}:${loc.share}" "${mountPoint}"`, { timeout: 15000 }, (err) => {
+        if (!err) resolve({ ok: 1, mountPath: mountPoint });
+        else resolve({ ok: 0, error: err.message + '\n\nTip: Try manually: sudo mount -t nfs ' + loc.host + ':' + loc.share + ' ' + mountPoint });
+      });
+    });
+  }
+
+  return { ok: 0, error: 'Unsupported type: ' + loc.type };
+});
+
+// Test connectivity to a host
+ipcMain.handle('net:test', async (_, host) => {
+  return new Promise(resolve => {
+    exec(`ping -c 1 -W 2 ${host} 2>&1`, { timeout: 5000 }, (err, out) => {
+      if (!err) resolve({ ok: 1, message: 'Host is reachable' });
+      else resolve({ ok: 0, error: 'Host unreachable' });
+    });
+  });
+});
+
+// List already-mounted gvfs network shares
+ipcMain.handle('net:listMounted', async () => {
+  const uid = process.getuid();
+  const gvfsBase = `/run/user/${uid}/gvfs`;
+  try {
+    const entries = await fs.promises.readdir(gvfsBase);
+    return entries
+      .filter(e => e.startsWith('smb-share:') || e.startsWith('nfs:'))
+      .map(e => ({ name: e, path: path.join(gvfsBase, e) }));
+  } catch { return []; }
 });
 ipcMain.handle('net:scan', ()=>new Promise(res=>{exec('avahi-browse -t -r _smb._tcp 2>/dev/null | head -40',{timeout:5000},(e,out)=>{if(e)return res([]);const hosts=[];for(const l of out.split('\n')){const h=l.match(/hostname\s*=\s*\[(.+?)\]/);const a=l.match(/address\s*=\s*\[(.+?)\]/);if(h)hosts.push({hostname:h[1].replace(/\.$/,'')});if(a&&hosts.length)hosts[hosts.length-1].address=a[1]}res(hosts)})}));
 

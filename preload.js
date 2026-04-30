@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld('api', {
   sessionLoad: () => ipcRenderer.invoke('session:load'),
   netMount: l => ipcRenderer.invoke('net:mount', l),
   netScan: () => ipcRenderer.invoke('net:scan'),
+  netTest: h => ipcRenderer.invoke('net:test', h),
+  netListMounted: () => ipcRenderer.invoke('net:listMounted'),
   winMin: () => ipcRenderer.invoke('win:min'),
   winMax: () => ipcRenderer.invoke('win:max'),
   winClose: () => ipcRenderer.invoke('win:close'),

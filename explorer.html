@@ -407,12 +407,38 @@ async function rmFav(i){bm.favourites.splice(i,1);await api.saveCfg('bookmarks',
 async function addBm(){const p=ct().path;if(!bm.bookmarks.includes(p)){bm.bookmarks.push(p);await api.saveCfg('bookmarks',bm);renderSB()}}
 async function rmBmk(i){bm.bookmarks.splice(i,1);await api.saveCfg('bookmarks',bm);renderSB()}
 
-function showNetDlg(){document.getElementById('modals').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)clsMod()"><div class="modal"><h3>🌐 Add Network Location</h3><label>Type</label><select id="nType"><option value="smb">SMB/CIFS</option></select><label>Display Name</label><input type="text" id="nName" placeholder="My Server"><label>Host</label><input type="text" id="nHost" placeholder="192.168.1.100"><label>Share</label><input type="text" id="nShare" placeholder="shared"><label>User</label><input type="text" id="nUser"><label>Password</label><input type="password" id="nPass"><div style="margin-top:12px"><button class="tb" onclick="scanNet()" style="background:var(--hv)">🔍 Scan</button> <span id="scanR" style="font-size:12px;color:var(--t3)"></span></div><div class="mbtns"><button class="mbtn s" onclick="clsMod()">Cancel</button><button class="mbtn p" onclick="saveNetLoc()">Add</button></div></div></div>`}
+function showNetDlg(){document.getElementById('modals').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)clsMod()"><div class="modal"><h3>🌐 Add Network Location</h3>
+<label>Type</label><select id="nType"><option value="smb">SMB/CIFS (Windows/Samba)</option><option value="nfs">NFS</option></select>
+<label>Display Name</label><input type="text" id="nName" placeholder="My Home Server">
+<label>Host (IP address or hostname)</label><input type="text" id="nHost" placeholder="192.168.1.100">
+<label>Share Name</label><input type="text" id="nShare" placeholder="shared">
+<label>Domain / Workgroup</label><input type="text" id="nDomain" placeholder="WORKGROUP" value="WORKGROUP">
+<label>Username (leave empty for guest access)</label><input type="text" id="nUser">
+<label>Password</label><input type="password" id="nPass">
+<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+  <button class="tb" onclick="scanNet()" style="background:var(--hv)">🔍 Scan LAN</button>
+  <button class="tb" onclick="testHost()" style="background:var(--hv)">📡 Test Connection</button>
+  <button class="tb" onclick="showMounted()" style="background:var(--hv)">📂 Show Mounted</button>
+</div>
+<div id="netStatus" style="font-size:12px;color:var(--t3);margin-top:8px;max-height:100px;overflow:auto;white-space:pre-wrap"></div>
+<div class="mbtns"><button class="mbtn s" onclick="clsMod()">Cancel</button><button class="mbtn p" onclick="saveNetLoc()">Add & Connect</button></div>
+</div></div>`}
 function clsMod(){document.getElementById('modals').innerHTML=''}
-async function scanNet(){document.getElementById('scanR').textContent='Scanning...';const h=await api.netScan();if(h.length){document.getElementById('scanR').textContent='Found: '+h.map(x=>x.hostname||x.address).join(', ');if(h[0])document.getElementById('nHost').value=h[0].address||h[0].hostname}else document.getElementById('scanR').textContent='None found'}
-async function saveNetLoc(){const loc={type:document.getElementById('nType').value,name:document.getElementById('nName').value,host:document.getElementById('nHost').value,share:document.getElementById('nShare').value,user:document.getElementById('nUser').value,pass:document.getElementById('nPass').value};if(!loc.host)return alert('Host required');netLoc.locations.push(loc);await api.saveCfg('networks',netLoc);renderSB();clsMod()}
+function netMsg(msg){const el=document.getElementById('netStatus');if(el)el.textContent=msg}
+async function scanNet(){netMsg('Scanning network...');const h=await api.netScan();if(h.length){netMsg('Found: '+h.map(x=>(x.hostname||'')+(x.address?' ('+x.address+')':'')).join(', '));if(h[0]&&h[0].address)document.getElementById('nHost').value=h[0].address}else netMsg('No SMB hosts found. Make sure your server has Samba/SMB enabled.')}
+async function testHost(){const host=document.getElementById('nHost').value;if(!host)return netMsg('Enter a host first');netMsg('Pinging '+host+'...');const r=await api.netTest(host);netMsg(r.ok?'✅ '+host+' is reachable!':'❌ '+host+' is not reachable. Check the IP address and make sure the server is on.')}
+async function showMounted(){netMsg('Checking mounted shares...');const m=await api.netListMounted();if(m.length){netMsg('Already mounted:\n'+m.map(x=>'• '+x.name).join('\n'));for(const x of m){if(!netLoc.locations.find(l=>l.mountPath===x.path)){netLoc.locations.push({type:'smb',name:x.name.split(',')[0].replace('smb-share:server=',''),host:'',share:'',mountPath:x.path});await api.saveCfg('networks',netLoc);renderSB()}}}else netMsg('No network shares currently mounted.')}
+async function saveNetLoc(){const loc={type:document.getElementById('nType').value,name:document.getElementById('nName').value,host:document.getElementById('nHost').value,share:document.getElementById('nShare').value,domain:document.getElementById('nDomain').value||'WORKGROUP',user:document.getElementById('nUser').value,pass:document.getElementById('nPass').value};if(!loc.host)return netMsg('❌ Host is required');netMsg('Connecting to '+loc.host+'...');const r=await api.netMount(loc);if(r.ok){loc.mountPath=r.mountPath;netLoc.locations.push(loc);await api.saveCfg('networks',netLoc);renderSB();clsMod();nav(r.mountPath)}else{netMsg('❌ Mount failed:\n\n'+r.error)}}
 async function rmNet(i){netLoc.locations.splice(i,1);await api.saveCfg('networks',netLoc);renderSB()}
-async function mountNet(i){const r=await api.netMount(netLoc.locations[i]);if(r.ok)nav(r.mountPath);else alert('Mount failed: '+r.error)}
+async function mountNet(i){
+  const loc=netLoc.locations[i];
+  // If we have a saved mountPath that still exists, go directly there
+  if(loc.mountPath){try{await api.stat(loc.mountPath);nav(loc.mountPath);return}catch{}}
+  // Otherwise try to mount
+  const r=await api.netMount(loc);
+  if(r.ok){loc.mountPath=r.mountPath;await api.saveCfg('networks',netLoc);nav(r.mountPath)}
+  else alert('Mount failed:\n\n'+r.error)
+}
 
 // ═══ DRAG ═══
 function nDrag(ev,path){ev.preventDefault();api.nativeDrag(path)}

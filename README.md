@@ -1,4 +1,4 @@
-# [Fluent Explorer](https://github.com/ssfahim/fluent-explorer/releases/tag/v1.0.0)
+# Fluent Explorer
 
 **A Windows 11–styled File Manager & Photo Viewer built for Linux Mint (and other Linux distros)**
 
@@ -100,7 +100,7 @@ Both apps appear as separate windows in your taskbar. Closing Photos does not cl
 
 ```bash
 # Download
-wget https://github.com/ssfahim/fluent-explorer/releases/download/v1.0.0/fluent-explorer-v1.0.0.tar.gz
+wget https://github.com/YOUR_USERNAME/fluent-explorer/releases/download/v1.0.0/fluent-explorer-v1.0.0.tar.gz
 
 # Extract and install
 tar xzf fluent-explorer-v1.0.0.tar.gz
@@ -112,7 +112,7 @@ chmod +x install.sh
 ### From Source
 
 ```bash
-git clone https://github.com/ssfahim/fluent-explorer.git
+git clone https://github.com/YOUR_USERNAME/fluent-explorer.git
 cd fluent-explorer
 chmod +x install.sh
 ./install.sh
@@ -281,7 +281,7 @@ Contributions are welcome! Here are some ideas:
 ### Development Setup
 
 ```bash
-git clone https://github.com/ssfahim/fluent-explorer.git
+git clone https://github.com/YOUR_USERNAME/fluent-explorer.git
 cd fluent-explorer
 npm install
 npm start          # Launch Explorer
