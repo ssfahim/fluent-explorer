@@ -281,7 +281,7 @@ Contributions are welcome! Here are some ideas:
 ### Development Setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/fluent-explorer.git
+git clone https://github.com/ssfahim/fluent-explorer.git
 cd fluent-explorer
 npm install
 npm start          # Launch Explorer
