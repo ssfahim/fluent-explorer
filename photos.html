@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' localthumb:; img-src 'self' localthumb: data: localthumb:;">
+<title>WinPhotos</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI Variable','Segoe UI',Ubuntu,'Noto Sans',system-ui,sans-serif;font-size:13px;color:#e0e0e0;background:#111;overflow:hidden;height:100vh;user-select:none}
+button{border:none;cursor:pointer;background:transparent;color:#e0e0e0;font-family:inherit}
+#app{display:flex;flex-direction:column;height:100vh}
+.titlebar{height:32px;background:#1a1a1a;display:flex;align-items:center;justify-content:space-between;padding:0 0 0 12px;border-bottom:1px solid #333;-webkit-app-region:drag;flex-shrink:0}
+.tl{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500}
+.wb{display:flex;-webkit-app-region:no-drag}.wb button{width:46px;height:32px;font-size:11px;display:flex;align-items:center;justify-content:center;transition:background .08s}.wb button:hover{background:rgba(255,255,255,.1)}.wb .cl:hover{background:#e81123;color:#fff}
+.bar{height:42px;background:#1a1a1a;display:flex;align-items:center;padding:0 16px;gap:8px;border-bottom:1px solid #333;flex-shrink:0}
+.btn{height:30px;padding:0 14px;border-radius:6px;font-size:13px;font-weight:500;transition:all .1s}.btn:hover{background:rgba(255,255,255,.1)}.btn.a{background:#60cdff;color:#000}
+.bar .sp{flex:1}
+.fbtn{height:30px;padding:0 12px;border-radius:6px;font-size:12px;display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.06);transition:background .1s}.fbtn:hover{background:rgba(255,255,255,.12)}
+/* Gallery */
+.gallery{flex:1;overflow-y:auto;padding:16px;background:#111}
+.gg{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px}
+.git{aspect-ratio:1;border-radius:6px;overflow:hidden;cursor:pointer;position:relative;background:#222;transition:transform .1s}
+.git:hover{transform:scale(1.02);box-shadow:0 4px 16px rgba(0,0,0,.4)}
+.git img{width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .15s}.git img.ld{opacity:1}
+.git .gn{position:absolute;bottom:0;left:0;right:0;padding:6px 8px;background:linear-gradient(transparent,rgba(0,0,0,.75));font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gdate{grid-column:1/-1;font-size:14px;font-weight:600;padding:12px 0 4px}
+.gload{text-align:center;padding:60px;color:#999}
+/* Viewer */
+.viewer{flex:1;display:none;flex-direction:column;background:#000;position:relative}
+.viewer.on{display:flex}
+.vmain{flex:1;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+.vmain img{position:absolute;max-width:95%;max-height:95%;object-fit:contain;border-radius:4px;transition:opacity .1s}.vmain img.hid{opacity:0;pointer-events:none}
+.arr{position:absolute;top:50%;transform:translateY(-50%);width:48px;height:48px;border-radius:50%;background:rgba(255,255,255,.08);font-size:22px;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);z-index:2;transition:background .1s}.arr:hover{background:rgba(255,255,255,.2)}.arr.l{left:20px}.arr.r{right:20px}
+.vtop{position:absolute;top:0;left:0;right:0;height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;background:linear-gradient(rgba(0,0,0,.6),transparent);z-index:3}
+.vinfo{font-size:13px;display:flex;align-items:center;gap:10px}.vinfo .fn{font-weight:600}.vinfo .fc{opacity:.5;font-size:12px}
+.vb{width:36px;height:36px;border-radius:6px;font-size:14px;display:flex;align-items:center;justify-content:center;transition:background .1s}.vb:hover{background:rgba(255,255,255,.12)}.vb.act{background:rgba(96,205,255,.2);color:#60cdff}
+.vbot{height:52px;display:flex;align-items:center;justify-content:center;gap:6px;background:rgba(20,20,20,.95);border-top:1px solid rgba(255,255,255,.06);flex-shrink:0;z-index:3}
+.zb{height:30px;min-width:36px;padding:0 10px;border-radius:5px;background:rgba(255,255,255,.07);font-size:13px;transition:background .1s}.zb:hover{background:rgba(255,255,255,.15)}
+.zl{font-size:12px;opacity:.5;width:44px;text-align:center}
+.vsep{width:1px;height:22px;background:rgba(255,255,255,.12);margin:0 6px}
+.film{height:80px;display:flex;align-items:center;gap:5px;padding:0 16px;overflow-x:auto;background:rgba(15,15,15,.98);border-top:1px solid rgba(255,255,255,.04);flex-shrink:0;z-index:3}
+.ft{width:56px;height:56px;border-radius:5px;overflow:hidden;cursor:pointer;border:2px solid transparent;opacity:.5;transition:all .1s;flex-shrink:0}.ft.a{border-color:#60cdff;opacity:1}.ft:hover{opacity:.8}.ft img{width:100%;height:100%;object-fit:cover}
+.ipanel{position:absolute;top:44px;right:0;bottom:0;width:280px;background:rgba(30,30,30,.97);border-left:1px solid rgba(255,255,255,.08);padding:20px;overflow-y:auto;z-index:4;animation:si .15s ease}
+@keyframes si{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+.ipanel h3{margin-bottom:16px;font-size:14px;font-weight:600}
+.ir{margin-bottom:12px}.ir .il{font-size:10px;color:rgba(255,255,255,.4);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px}.ir .iv{font-size:13px;word-break:break-all}
+/* Drop zone */
+.dropzone{position:fixed;inset:0;z-index:9999;background:rgba(96,205,255,.08);border:3px dashed #60cdff;display:none;align-items:center;justify-content:center;font-size:16px;color:#60cdff;pointer-events:none}
+.dropzone.show{display:flex}
+.statusbar{height:26px;background:#1a1a1a;border-top:1px solid #333;display:flex;align-items:center;padding:0 16px;gap:16px;font-size:12px;color:#999;flex-shrink:0}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="titlebar"><div class="tl"><span>🖼️</span><span id="ttl">WinPhotos</span></div><div class="wb"><button onclick="api.winMin()">─</button><button onclick="api.winMax()">□</button><button class="cl" onclick="api.winClose()">✕</button></div></div>
+  <div class="bar" id="bar"></div>
+  <div class="gallery" id="gallery"></div>
+  <div class="viewer" id="viewer"></div>
+  <div class="dropzone" id="dropzone">Drop image here to add to folder</div>
+  <div class="statusbar" id="status"></div>
+</div>
+<script>
+let mode='gallery', images=[], vi=0, zoom=1, infoOn=false, curFolder='';
+let imgA=null, imgB=null, useA=true, preloaded={}, thumbUrls={};
+let galCycle=0;
+const params=new URLSearchParams(location.search);
+
+async function init(){
+  curFolder = params.get('folder') || '';
+  const targetImage = params.get('image') || '';
+
+  if(!curFolder) {
+    curFolder = await api.pickFolder();
+    if(!curFolder){ document.getElementById('gallery').innerHTML='<div class="gload">No folder selected</div>'; return; }
+  }
+
+  renderBar();
+
+  // Request sorted image list from main process (set by Explorer before creating this window)
+  const sortedData = await api.getSortedList();
+
+  if(sortedData && sortedData.sortedPaths && sortedData.sortedPaths.length) {
+    // Explorer provided a sorted list — use it directly (preserves exact sort order)
+    images = sortedData.sortedPaths.map(p => {
+      const name = p.split('/').pop();
+      const ext = name.split('.').pop().toLowerCase();
+      return { name, path: p, ext, size: 0, modified: '', modifiedDate: '' };
+    });
+    // Find the exact clicked image
+    const startImg = sortedData.startImage || targetImage;
+    const idx = startImg ? images.findIndex(img => img.path === startImg) : 0;
+    await showViewer(idx >= 0 ? idx : 0);
+    updTitle();
+    // Load stats in background
+    for (let i = 0; i < images.length; i++) {
+      const r = await api.stat(images[i].path);
+      if (r.ok) { images[i].size = r.stats.size; images[i].modified = r.stats.modified; images[i].modifiedDate = r.stats.modified?.split('T')[0] || ''; }
+    }
+    return;
+  }
+
+  // Fallback: standalone mode — load images ourselves
+  images = await api.listImages(curFolder);
+
+  if(targetImage && images.length) {
+    const idx = images.findIndex(img => img.path === targetImage);
+    if(idx >= 0) { await showViewer(idx); return; }
+  }
+
+  if(images.length) renderGallery();
+  else document.getElementById('gallery').innerHTML='<div class="gload">📂 No images here. Click "Scan Subfolders" to search deeper.</div>';
+  updStat(); updTitle();
+}
+
+function renderBar(){
+  document.getElementById('bar').innerHTML=`
+    <button class="btn ${mode==='gallery'?'a':''}" onclick="toGallery()">🖼️ Gallery</button>
+    <button class="btn ${mode==='viewer'?'a':''}" onclick="if(images.length)showViewer(vi)">👁️ Viewer</button>
+    <div class="sp"></div>
+    <button class="fbtn" onclick="deepScan()">🔍 Scan Subfolders</button>
+    <button class="fbtn" onclick="changeFolder()">📁 ${curFolder.split('/').pop()||'/'}</button>
+    <button class="fbtn" onclick="doRefresh()">🔄</button>`;
+}
+
+// ═══ GALLERY ═══
+function renderGallery(){
+  const el=document.getElementById('gallery');
+  if(!images.length){ el.innerHTML='<div class="gload">📂 No images</div>'; return; }
+  galCycle++;
+  const groups={};
+  for(const img of images){ const d=img.modifiedDate; if(!groups[d])groups[d]=[]; groups[d].push(img); }
+
+  let h='<div class="gg">';
+  for(const[date,imgs] of Object.entries(groups)){
+    h+=`<div class="gdate">${fmtDate(date)}</div>`;
+    for(const img of imgs){
+      const globalIdx = images.indexOf(img);
+      h+=`<div class="git" ondblclick="showViewer(${globalIdx})" draggable="true" ondragstart="startNativeDrag(event,'${esc(img.path)}')"><img data-gpath="${img.path}" data-greqid="" src=""><div class="gn">${img.name}</div></div>`;
+    }
+  }
+  h+='</div>';
+  el.innerHTML=h;
+  loadGalThumbs();
+}
+
+let galReqId=0;
+async function loadGalThumbs(){
+  const cycle=galCycle;
+  const imgEls = [...document.querySelectorAll('.git img[data-gpath]')];
+  // Build direct reference map
+  const elMap=new Map();
+  for(const el of imgEls){elMap.set(el.getAttribute('data-gpath'),el)}
+
+  // Apply cached first
+  const uncached=[];
+  for(const[p,el]of elMap){
+    if(thumbUrls[p]){el.src=thumbUrls[p];el.classList.add('ld');}
+    else uncached.push({p,el});
+  }
+
+  // Load uncached with request-ID protection
+  for(const item of uncached){
+    if(galCycle!==cycle)return;
+    const rid=++galReqId;
+    item.el.dataset.greqid=String(rid);
+    const url=await api.getThumb(item.p);
+    if(galCycle!==cycle)return;
+    // Verify this element still expects this request
+    if(item.el.dataset.greqid!==String(rid))continue;
+    if(item.el.dataset.gpath!==item.p)continue;
+    if(url){thumbUrls[item.p]=url;item.el.src=url;item.el.classList.add('ld')}
+  }
+}
+
+async function deepScan(){
+  document.getElementById('gallery').innerHTML='<div class="gload">🔍 Scanning subfolders...</div>';
+  images = await api.scanImages(curFolder, 4);
+  images.sort((a,b) => b.modified.localeCompare(a.modified));
+  renderGallery(); updStat();
+}
+
+// ═══ VIEWER ═══
+async function showViewer(idx){
+  mode='viewer'; vi=idx; zoom=1; infoOn=false;
+  document.getElementById('gallery').style.display='none';
+  document.getElementById('viewer').className='viewer on';
+  renderBar(); buildDOM(); await showCur(); preloadNear();
+}
+
+function buildDOM(){
+  const v=document.getElementById('viewer');
+  v.innerHTML=`
+    <div class="vtop">
+      <div class="vinfo"><span>🖼️</span><span class="fn" id="vfn"></span><span class="fc" id="vfc"></span></div>
+      <div style="display:flex;gap:4px">
+        <button class="vb" id="infoBtn" onclick="infoOn=!infoOn;updUI()">ℹ️</button>
+        <button class="vb" onclick="toGallery()">✕</button>
+      </div>
+    </div>
+    <div class="vmain" id="vmain">
+      ${images.length>1?'<button class="arr l" onclick="goPrev()">‹</button>':''}
+      ${images.length>1?'<button class="arr r" id="arrR" onclick="goNext()">›</button>':''}
+      <img id="imgA" src="" draggable="true">
+      <img id="imgB" src="" class="hid" draggable="true">
+    </div>
+    <div id="ipc"></div>
+    <div class="vbot">
+      <button class="zb" onclick="zOut()">−</button>
+      <span class="zl" id="zl">100%</span>
+      <button class="zb" onclick="zIn()">+</button>
+      <div class="vsep"></div>
+      <button class="zb" onclick="zoom=1;apZ()">Fit</button>
+      <button class="zb" onclick="zoom=2;apZ()">Fill</button>
+    </div>
+    ${images.length>1?'<div class="film" id="film"></div>':''}`;
+  imgA=document.getElementById('imgA');
+  imgB=document.getElementById('imgB');
+  useA=true;
+  // Native drag from viewer images
+  imgA.addEventListener('dragstart', e => { e.preventDefault(); api.nativeDrag(images[vi].path); });
+  imgB.addEventListener('dragstart', e => { e.preventDefault(); api.nativeDrag(images[vi].path); });
+}
+
+async function showCur(){
+  const img=images[vi]; if(!img)return;
+  let url=preloaded[img.path];
+  if(!url){ url=await api.imageUrl(img.path); preloaded[img.path]=url; }
+  const act=useA?imgA:imgB, inact=useA?imgB:imgA;
+  act.src=url; act.className=''; act.style.transform=`scale(${zoom})`;
+  inact.className='hid';
+  updUI(); renderFilm();
+}
+
+async function goNext(){
+  vi=(vi+1)%images.length; zoom=1;
+  const img=images[vi];
+  let url=preloaded[img.path];
+  if(!url){ url=await api.imageUrl(img.path); preloaded[img.path]=url; }
+  useA=!useA;
+  const act=useA?imgA:imgB, inact=useA?imgB:imgA;
+  act.src=url; act.className=''; act.style.transform='scale(1)';
+  inact.className='hid';
+  updUI(); renderFilm(); preloadNear();
+}
+
+async function goPrev(){
+  vi=(vi-1+images.length)%images.length; zoom=1;
+  const img=images[vi];
+  let url=preloaded[img.path];
+  if(!url){ url=await api.imageUrl(img.path); preloaded[img.path]=url; }
+  useA=!useA;
+  const act=useA?imgA:imgB, inact=useA?imgB:imgA;
+  act.src=url; act.className=''; act.style.transform='scale(1)';
+  inact.className='hid';
+  updUI(); renderFilm(); preloadNear();
+}
+
+async function preloadNear(){
+  for(let o=1;o<=5;o++){
+    for(const d of [-1,1]){
+      const i=(vi+d*o+images.length)%images.length;
+      if(images[i]&&!preloaded[images[i].path]){
+        preloaded[images[i].path]=await api.imageUrl(images[i].path);
+      }
+    }
+  }
+}
+
+async function jumpTo(i){ vi=i; zoom=1; await showCur(); preloadNear(); }
+
+function updUI(){
+  const img=images[vi]; if(!img)return;
+  document.getElementById('vfn').textContent=img.name;
+  document.getElementById('vfc').textContent=`${vi+1} of ${images.length}`;
+  document.getElementById('zl').textContent=Math.round(zoom*100)+'%';
+  const ib=document.getElementById('infoBtn'); if(ib) ib.className=infoOn?'vb act':'vb';
+  const ar=document.getElementById('arrR'); if(ar) ar.style.right=infoOn?'296px':'20px';
+  const ipc=document.getElementById('ipc');
+  if(infoOn){
+    ipc.innerHTML=`<div class="ipanel"><h3>File info</h3>
+      <div class="ir"><div class="il">Name</div><div class="iv">${img.name}</div></div>
+      <div class="ir"><div class="il">Type</div><div class="iv">${img.ext.toUpperCase()} Image</div></div>
+      <div class="ir"><div class="il">Size</div><div class="iv">${fmt(img.size)}</div></div>
+      <div class="ir"><div class="il">Date</div><div class="iv">${img.modifiedDate}</div></div>
+      <div class="ir"><div class="il">Path</div><div class="iv">${img.path}</div></div>
+    </div>`;
+  } else ipc.innerHTML='';
+  updStat();
+}
+
+function renderFilm(){
+  const fs=document.getElementById('film'); if(!fs)return;
+  const s=Math.max(0,vi-15), e=Math.min(images.length,vi+15);
+  let h='';
+  if(s>0) h+=`<div style="min-width:${s*61}px;flex-shrink:0"></div>`;
+  for(let i=s;i<e;i++){
+    const t=images[i], url=thumbUrls[t.path]||'';
+    h+=`<div class="ft${i===vi?' a':''}" onclick="jumpTo(${i})">${url?`<img src="${url}">`:`<div style="width:100%;height:100%;background:#333"></div>`}</div>`;
+  }
+  fs.innerHTML=h;
+  requestAnimationFrame(()=>{ const a=fs.querySelector('.ft.a'); if(a) a.scrollIntoView({behavior:'auto',block:'nearest',inline:'center'}); });
+}
+
+function zIn(){ zoom=Math.min(zoom+.25,5); apZ(); }
+function zOut(){ zoom=Math.max(zoom-.25,.25); apZ(); }
+function apZ(){ const act=useA?imgA:imgB; if(act) act.style.transform=`scale(${zoom})`; document.getElementById('zl').textContent=Math.round(zoom*100)+'%'; }
+
+function toGallery(){ mode='gallery'; document.getElementById('gallery').style.display=''; document.getElementById('viewer').className='viewer'; renderBar(); updStat(); }
+async function changeFolder(){ const f=await api.pickFolder(); if(f){ curFolder=f; preloaded={}; thumbUrls={}; images=await api.listImages(curFolder); renderGallery(); renderBar(); updStat(); updTitle(); } }
+async function doRefresh(){ preloaded={}; thumbUrls={}; images=await api.listImages(curFolder); renderGallery(); updStat(); }
+
+// ═══ NATIVE DRAG (from gallery items) ═══
+function startNativeDrag(ev, filePath){
+  ev.preventDefault();
+  api.nativeDrag(filePath);
+}
+
+// ═══ DROP ZONE — accept files dropped INTO Photos window ═══
+document.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect='copy'; document.getElementById('dropzone').classList.add('show'); });
+document.addEventListener('dragleave', e => { if(e.relatedTarget) return; document.getElementById('dropzone').classList.remove('show'); });
+document.addEventListener('drop', async e => {
+  e.preventDefault();
+  document.getElementById('dropzone').classList.remove('show');
+  // Files dropped from Explorer or desktop
+  if(e.dataTransfer.files.length){
+    for(const f of e.dataTransfer.files){
+      if(f.path) await api.copyFile(f.path, curFolder);
+    }
+    await doRefresh();
+  }
+});
+
+// ═══ KEYBOARD ═══
+document.addEventListener('keydown', e => {
+  if(mode==='viewer'){
+    if(e.key==='ArrowRight') goNext();
+    if(e.key==='ArrowLeft') goPrev();
+    if(e.key==='Escape') toGallery();
+    if(e.key==='+'||e.key==='=') zIn();
+    if(e.key==='-') zOut();
+    if(e.key==='0'){ zoom=1; apZ(); }
+    if(e.key==='i'){ infoOn=!infoOn; updUI(); }
+  }
+});
+
+function fmt(b){if(!b)return'—';if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';if(b<1073741824)return(b/1048576).toFixed(1)+' MB';return(b/1073741824).toFixed(1)+' GB'}
+function fmtDate(d){const now=new Date().toISOString().split('T')[0];if(d===now)return'Today';const y=new Date(Date.now()-864e5).toISOString().split('T')[0];if(d===y)return'Yesterday';return new Date(d+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}
+function esc(s){return s.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
+function updStat(){document.getElementById('status').textContent=mode==='gallery'?`${images.length} images in ${curFolder.split('/').pop()||'/'}`:`${vi+1} of ${images.length} · ${images[vi]?.name||''}`}
+function updTitle(){document.getElementById('ttl').textContent='WinPhotos — '+(curFolder.split('/').pop()||'/')}
+
+init();
+</script>
+</body>
+</html>

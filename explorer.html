@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' localthumb:; img-src 'self' localthumb: data: localthumb:;">
+<title>WinExplorer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#f3f3f3;--sf:#fff;--sb:#f9f9f9;--tb:#fbfbfb;--bd:#e5e5e5;--tx:#1a1a1a;--t2:#555;--t3:#888;--ac:#0078d4;--abg:#cde4f7;--abd:#90c0e8;--hv:#f0f4f8;--h2:#e8e8e8;--cr:#e81123;--tbg:#e8e8e8;--ctx:#fff;--cs:rgba(0,0,0,.15);--ib:#fff;--ibd:#d1d1d1}
+.dark{--bg:#1e1e1e;--sf:#252526;--sb:#1e1e1e;--tb:#2d2d2d;--bd:#3e3e3e;--tx:#d4d4d4;--t2:#aaa;--t3:#777;--ac:#60cdff;--abg:#264f78;--abd:#3a7bbf;--hv:#2a2d2e;--h2:#3e3e3e;--tbg:#2d2d2d;--ctx:#2d2d2d;--cs:rgba(0,0,0,.5);--ib:#3c3c3c;--ibd:#555}
+body{font-family:'Segoe UI Variable','Segoe UI',Ubuntu,'Noto Sans',system-ui,sans-serif;font-size:13px;color:var(--tx);background:var(--bg);overflow:hidden;height:100vh;user-select:none}
+input,button{font-family:inherit;color:var(--tx)}button{border:none;cursor:pointer;background:transparent}
+select{font-family:inherit;color:var(--tx);background:var(--ib);border:1px solid var(--ibd);border-radius:4px;height:26px;padding:0 4px;font-size:11px}
+#app{display:flex;flex-direction:column;height:100vh}
+.titlebar{height:32px;background:var(--tb);display:flex;align-items:center;justify-content:space-between;padding:0 0 0 12px;border-bottom:1px solid var(--bd);-webkit-app-region:drag;flex-shrink:0}
+.tl{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500}
+.wb{display:flex;-webkit-app-region:no-drag}.wb button{width:46px;height:32px;font-size:11px;display:flex;align-items:center;justify-content:center;transition:background .08s}.wb button:hover{background:var(--h2)}.wb .cl:hover{background:var(--cr);color:#fff}
+.tabbar{height:36px;background:var(--tbg);display:flex;align-items:flex-end;padding:0 8px;gap:1px;border-bottom:1px solid var(--bd);flex-shrink:0;overflow-x:auto}
+.tab{height:30px;padding:0 14px;display:flex;align-items:center;gap:8px;border-radius:8px 8px 0 0;font-size:12px;cursor:pointer;background:transparent;color:var(--t2);max-width:200px;flex-shrink:0}.tab:hover{background:var(--hv)}.tab.a{background:var(--sf);color:var(--tx);font-weight:600}
+.tab .tc{width:18px;height:18px;border-radius:4px;font-size:10px;display:flex;align-items:center;justify-content:center;opacity:0}.tab:hover .tc{opacity:.6}.tab .tc:hover{opacity:1;background:rgba(128,128,128,.2)}
+.tn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px}
+.tadd{width:30px;height:28px;border-radius:6px;font-size:16px;display:flex;align-items:center;justify-content:center;color:var(--t3);align-self:center;flex-shrink:0}.tadd:hover{background:var(--hv)}
+.toolbar{height:42px;background:var(--tb);display:flex;align-items:center;padding:0 8px;gap:3px;border-bottom:1px solid var(--bd);flex-shrink:0;overflow-x:auto}
+.tb{height:28px;padding:0 8px;border-radius:4px;display:flex;align-items:center;gap:4px;font-size:12px;white-space:nowrap}.tb:hover{background:var(--h2)}
+.sp{width:1px;height:18px;background:var(--bd);margin:0 3px;flex-shrink:0}
+.vt{display:flex;border-radius:4px;overflow:hidden;border:1px solid var(--ibd)}.vt button{width:28px;height:24px;font-size:12px;display:flex;align-items:center;justify-content:center;background:var(--ib);color:var(--t2)}.vt button.a{background:var(--ac);color:#fff}
+.abar{height:38px;background:var(--tb);display:flex;align-items:center;padding:0 12px;gap:6px;border-bottom:1px solid var(--bd);flex-shrink:0}
+.nb{width:28px;height:26px;border-radius:4px;font-size:14px;display:flex;align-items:center;justify-content:center}.nb:hover:not(:disabled){background:var(--h2)}.nb:disabled{color:var(--t3);cursor:default;opacity:.4}
+.pb{flex:1;height:28px;background:var(--ib);border:1px solid var(--ibd);border-radius:4px;display:flex;align-items:center;padding:0 8px;gap:3px;overflow:hidden}
+.ps{cursor:pointer;padding:2px 4px;border-radius:3px;color:var(--ac)}.ps:hover{background:var(--abg)}.ps.c{font-weight:600}
+.psep{color:var(--t3);font-size:10px}
+.sbox{width:200px;height:28px;background:var(--ib);border:1px solid var(--ibd);border-radius:4px;display:flex;align-items:center;padding:0 8px;gap:5px}.sbox input{flex:1;border:none;outline:none;font-size:12px;background:transparent;color:var(--tx)}
+.body{flex:1;display:flex;overflow:hidden}
+.sidebar{width:210px;background:var(--sb);border-right:1px solid var(--bd);overflow-y:auto;padding:6px 0;flex-shrink:0}
+.st{padding:5px 14px;font-size:10px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.6px;display:flex;align-items:center;justify-content:space-between}
+.st button{font-size:14px;width:20px;height:20px;border-radius:4px;display:flex;align-items:center;justify-content:center;color:var(--t3)}.st button:hover{background:var(--h2);color:var(--tx)}
+.si{padding:4px 14px;display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;border-radius:4px;margin:1px 6px}.si:hover{background:var(--hv)}.si.a{background:var(--abg);color:var(--ac);font-weight:600}
+.si .ico{font-size:14px;width:18px;text-align:center}
+.si .rm{opacity:0;font-size:11px;margin-left:auto;width:18px;height:18px;border-radius:3px;display:flex;align-items:center;justify-content:center}.si:hover .rm{opacity:.5}.si .rm:hover{opacity:1;background:var(--h2)}
+.content{flex:1;overflow-y:auto;padding:12px;background:var(--sf);position:relative}
+.group-hdr{font-size:12px;font-weight:600;color:var(--t3);padding:8px 4px 4px;border-bottom:1px solid var(--bd);margin:8px 0 4px;text-transform:uppercase;letter-spacing:.3px}
+/* GRID — icon sizes via CSS vars */
+.gv{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--grid-cell),1fr));gap:4px}
+.gi{padding:8px;border-radius:6px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:5px;border:1px solid transparent;text-align:center}.gi:hover{background:var(--hv)}
+.gi.sel{background:var(--abg);border-color:var(--abd)}
+.gi.dov{border-color:var(--ac);background:var(--abg)}
+.gi .th{width:var(--thumb-size);height:var(--thumb-size);border-radius:4px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--hv);position:relative}
+.gi .th img{width:100%;height:100%;object-fit:cover}.gi .fi{font-size:var(--icon-font)}
+.gi .fn{font-size:11px;line-height:15px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gi.sel .fn{font-weight:600}
+.gi .vbadge{position:absolute;bottom:2px;right:2px;background:rgba(0,0,0,.7);color:#fff;font-size:9px;padding:1px 4px;border-radius:3px}
+/* Icon size presets */
+.sz-sm{--grid-cell:80px;--thumb-size:48px;--icon-font:24px}
+.sz-md{--grid-cell:100px;--thumb-size:64px;--icon-font:32px}
+.sz-lg{--grid-cell:140px;--thumb-size:96px;--icon-font:48px}
+.sz-xl{--grid-cell:200px;--thumb-size:150px;--icon-font:64px}
+/* LIST */
+.lh{display:grid;grid-template-columns:2fr 80px 110px 100px;padding:4px 12px;font-size:12px;color:var(--t3);border-bottom:1px solid var(--bd);font-weight:600;gap:8px}
+.lh span{cursor:pointer}.lh span:hover{color:var(--ac)}.lh span.sorted{color:var(--ac)}
+.li{display:grid;grid-template-columns:2fr 80px 110px 100px;padding:4px 12px;border-radius:4px;cursor:pointer;gap:8px;border:1px solid transparent;font-size:12px;align-items:center}.li:hover{background:var(--hv)}.li.sel{background:var(--abg);border-color:var(--abd)}.li.dov{border-color:var(--ac)}
+.li .ln{display:flex;align-items:center;gap:8px;overflow:hidden}.li .ln img{width:18px;height:18px;border-radius:2px;object-fit:cover}.li .ln .fi{font-size:14px}.li .ln span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.li .lm{color:var(--t2)}
+/* TILES */
+.tv{display:flex;flex-wrap:wrap;gap:8px}
+.ti{width:230px;padding:10px;border-radius:6px;cursor:pointer;display:flex;gap:10px;align-items:center;border:1px solid var(--bd);background:var(--sb)}.ti:hover{background:var(--hv)}.ti.sel{background:var(--abg);border-color:var(--abd)}.ti.dov{border-color:var(--ac)}
+.ti .th{width:44px;height:44px;border-radius:4px;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:var(--hv)}.ti .th img{width:100%;height:100%;object-fit:cover}.ti .fi{font-size:26px}
+.ti .tinfo{min-width:0}.ti .tname{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ti .tmeta{font-size:11px;color:var(--t2)}.ti .tdate{font-size:10px;color:var(--t3)}
+.empty{text-align:center;padding:60px;color:var(--t3)}.empty .big{font-size:48px;margin-bottom:12px}
+.loading{text-align:center;padding:40px;color:var(--t3)}
+.statusbar{height:26px;background:var(--tb);border-top:1px solid var(--bd);display:flex;align-items:center;padding:0 16px;gap:16px;font-size:12px;color:var(--t2);flex-shrink:0}
+.ctx{position:fixed;background:var(--ctx);border:1px solid var(--bd);border-radius:8px;box-shadow:0 8px 24px var(--cs);padding:4px 0;min-width:200px;z-index:8888;animation:fi .1s}@keyframes fi{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}
+.ci{padding:6px 16px;font-size:12px;display:flex;align-items:center;gap:10px;width:100%;text-align:left;color:var(--tx)}.ci:hover{background:var(--hv)}
+.csp{height:1px;background:var(--bd);margin:4px 0}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:7777;display:flex;align-items:center;justify-content:center}
+.modal{background:var(--sf);border-radius:12px;padding:24px;width:440px;box-shadow:0 16px 48px rgba(0,0,0,.25);color:var(--tx)}
+.modal h3{margin-bottom:16px;font-size:16px}
+.modal label{display:block;font-size:12px;color:var(--t2);margin:8px 0 4px}
+.modal input[type=text],.modal input[type=password],.modal select{width:100%;height:32px;border:1px solid var(--ibd);border-radius:4px;padding:0 8px;background:var(--ib);color:var(--tx);font-size:13px}
+.modal .mbtns{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
+.modal .mbtn{height:32px;padding:0 16px;border-radius:6px;font-size:13px;font-weight:500}.modal .mbtn.p{background:var(--ac);color:#fff}.modal .mbtn.s{background:var(--h2)}
+/* Rubber band */
+#rubberband{position:fixed;border:1px solid var(--ac);background:rgba(0,120,212,.08);pointer-events:none;z-index:100;display:none}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="titlebar"><div class="tl"><span>📁</span><span id="ttl">File Explorer</span></div><div class="wb"><button onclick="api.winMin()">─</button><button onclick="api.winMax()">□</button><button class="cl" onclick="doClose()">✕</button></div></div>
+  <div class="tabbar" id="tabbar"></div>
+  <div class="toolbar" id="toolbar"></div>
+  <div class="abar" id="abar"></div>
+  <div class="body"><div class="sidebar" id="sidebar"></div><div class="content sz-md" id="content"></div></div>
+  <div class="statusbar" id="status"></div>
+</div>
+<div class="ctx" id="ctx" style="display:none"></div>
+<div id="modals"></div>
+<div id="rubberband"></div>
+
+<script>
+function natCmp(a,b){return a.localeCompare(b,undefined,{numeric:true,sensitivity:'base'})}
+
+let tabs=[],atid=null,vm='grid',qp={},bm={favourites:[],bookmarks:[]},settings={theme:'light'},sortPrefs={},netLoc={locations:[]},tc=0;
+let sortBy='name',sortAsc=true,groupBy='none';
+let iconSize='md'; // sm|md|lg|xl
+// Renderer-side thumb cache (URL strings). Persists within session.
+let thumbCache={};
+let thumbAbort=0;
+// Global request counter — each thumbnail request gets a unique ID
+let globalReqId=0;
+// Direct reference map rebuilt after every buildContent
+let imgElementMap=new Map();
+
+const ICONS={folder:'📁',txt:'📄',pdf:'📕',doc:'📘',docx:'📘',xls:'📊',xlsx:'📊',csv:'📊',zip:'📦',gz:'📦',tar:'📦','7z':'📦',rar:'📦',deb:'📀',rpm:'📀',appimage:'📀',mp3:'🎵',wav:'🎵',flac:'🎵',ogg:'🎵',aac:'🎵',mp4:'🎬',avi:'🎬',mkv:'🎬',mov:'🎬',webm:'🎬',flv:'🎬',wmv:'🎬',py:'🐍',js:'📜',ts:'📜',html:'🌐',css:'🎨',json:'📋',xml:'📋',md:'📝',sh:'⚙️',conf:'⚙️',log:'📋',default:'📄'};
+function ico(e){return e.isDirectory?ICONS.folder:e.isVideo?'🎬':(ICONS[e.ext]||ICONS.default)}
+function fmt(b){if(!b)return'—';if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';if(b<1073741824)return(b/1048576).toFixed(1)+' MB';return(b/1073741824).toFixed(1)+' GB'}
+function ct(){return tabs.find(t=>t.id===atid)}
+function esc(s){return s.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
+function fileCategory(e){if(e.isDirectory)return'📁 Folders';if(e.isImage)return'🖼️ Images';if(e.isVideo)return'🎬 Videos';const d=new Set(['txt','pdf','doc','docx','xls','xlsx','csv','md','json','xml','yaml','yml','html','css']);if(d.has(e.ext))return'📄 Documents';return'📎 Other'}
+
+async function init(){
+  qp=await api.quickPaths();
+  settings=await api.loadCfg('settings',{theme:'light'});
+  bm=await api.loadCfg('bookmarks',{favourites:[],bookmarks:[]});
+  sortPrefs=await api.loadCfg('sortprefs',{});
+  netLoc=await api.loadCfg('networks',{locations:[]});
+  if(!bm.favourites)bm.favourites=[];if(!bm.bookmarks)bm.bookmarks=[];if(!netLoc.locations)netLoc.locations=[];
+
+  // Try to restore last session
+  const session=await api.sessionLoad();
+  applyTheme();
+  iconSize=settings.iconSize||'md';
+  document.getElementById('content').className='content sz-'+iconSize;
+
+  if(session&&session.tabs&&session.tabs.length){
+    for(const tp of session.tabs) addTab(tp);
+  } else {
+    addTab(qp.home);
+  }
+}
+function applyTheme(){document.body.className=settings.theme==='dark'?'dark':''}
+
+async function clearSession(){
+  if(!confirm('Clear session history and start fresh?\nAll tabs will close and Home will open.'))return;
+  await api.sessionSave(null);
+  tabs=[];tc=0;atid=null;addTab(qp.home);
+}
+
+// Save session on close
+async function doClose(){
+  const sessionData={tabs:tabs.map(t=>t.path)};
+  await api.sessionSave(sessionData);
+  api.winClose();
+}
+
+// ═══ TABS ═══
+function addTab(p){const id=++tc;tabs.push({id,path:p,hist:[p],hi:0,entries:[],filtered:[],sel:new Set(),search:'',scroll:0});switchTab(id)}
+function closeTab(id){if(tabs.length<=1)return;const i=tabs.findIndex(t=>t.id===id);tabs.splice(i,1);if(atid===id)switchTab(tabs[Math.min(i,tabs.length-1)].id);else renderTabs()}
+function switchTab(id){const p=ct();if(p)p.scroll=document.getElementById('content').scrollTop;atid=id;renderTabs();nav(ct().path,false)}
+function renderTabs(){const b=document.getElementById('tabbar');let h='';for(const t of tabs){const n=t.path.split('/').filter(Boolean).pop()||'/';h+=`<div class="tab${t.id===atid?' a':''}" onclick="switchTab(${t.id})" title="${t.path}"><span class="tn">${n}</span>${tabs.length>1?`<span class="tc" onclick="event.stopPropagation();closeTab(${t.id})">✕</span>`:''}</div>`}h+=`<button class="tadd" onclick="addTab(ct().path)">+</button>`;b.innerHTML=h}
+
+function renderTB(){
+  const ar=sortAsc?'▲':'▼';
+  document.getElementById('toolbar').innerHTML=`
+    <button class="tb" onclick="newFolder()">📁 New</button><div class="sp"></div>
+    <button class="tb" onclick="cutSel()">✂️</button><button class="tb" onclick="copySel()">📋</button><button class="tb" onclick="pasteHere()">📄 Paste</button>
+    <button class="tb" onclick="renameSel()">✏️</button><button class="tb" onclick="deleteSel()">🗑️</button><div class="sp"></div>
+    <button class="tb" onclick="api.openTerminal(ct().path)">🖥️</button>
+    <button class="tb" onclick="openPhotosGallery()">🖼️ Photos</button><div style="flex:1"></div>
+    <select onchange="setIconSize(this.value)" title="Icon size">
+      <option value="sm"${iconSize==='sm'?' selected':''}>Small</option>
+      <option value="md"${iconSize==='md'?' selected':''}>Medium</option>
+      <option value="lg"${iconSize==='lg'?' selected':''}>Large</option>
+      <option value="xl"${iconSize==='xl'?' selected':''}>Extra Large</option>
+    </select>
+    <div class="sp"></div>
+    <select onchange="sortBy=this.value;doSort()"><option value="name"${sortBy==='name'?' selected':''}>Name</option><option value="modified"${sortBy==='modified'?' selected':''}>Date Modified</option><option value="created"${sortBy==='created'?' selected':''}>Date Created</option><option value="size"${sortBy==='size'?' selected':''}>Size</option><option value="type"${sortBy==='type'?' selected':''}>Type</option><option value="ext"${sortBy==='ext'?' selected':''}>Extension</option></select>
+    <button class="tb" onclick="sortAsc=!sortAsc;doSort()">${ar}</button>
+    <select onchange="groupBy=this.value;doSort()"><option value="none"${groupBy==='none'?' selected':''}>No group</option><option value="type"${groupBy==='type'?' selected':''}>Group: Type</option><option value="date"${groupBy==='date'?' selected':''}>Group: Date</option></select>
+    <div class="sp"></div>
+    <div class="vt"><button class="${vm==='grid'?'a':''}" onclick="setVM('grid')">⊞</button><button class="${vm==='list'?'a':''}" onclick="setVM('list')">☰</button><button class="${vm==='tiles'?'a':''}" onclick="setVM('tiles')">⊟</button></div>
+    <div class="sp"></div>
+    <button class="tb" onclick="clearSession()" title="Clear history & fresh start">🧹</button>
+    <button class="tb" onclick="toggleTheme()">${settings.theme==='dark'?'☀️':'🌙'}</button>`;
+}
+function setIconSize(sz){iconSize=sz;const el=document.getElementById('content');el.className='content sz-'+sz;settings.iconSize=sz;api.saveCfg('settings',settings)}
+
+// ═══ SORT ═══
+function doSort(){sortEnt();filterEnt();renderTB();sortPrefs[ct().path]={sortBy,sortAsc,groupBy};api.saveCfg('sortprefs',sortPrefs)}
+function loadFolderSort(dir){const p=sortPrefs[dir];if(p){sortBy=p.sortBy||'name';sortAsc=p.sortAsc!==undefined?p.sortAsc:true;groupBy=p.groupBy||'none'}else{const nm=dir.split('/').pop()?.toLowerCase()||'';if(nm==='pictures'||nm==='photos'){sortBy='modified';sortAsc=false}else if(nm==='downloads'){sortBy='modified';sortAsc=false}else{sortBy='name';sortAsc=true}groupBy='none'}}
+function sortEnt(){ct().entries.sort((a,b)=>{if(a.isDirectory!==b.isDirectory)return a.isDirectory?-1:1;let c=0;switch(sortBy){case'name':c=natCmp(a.name,b.name);break;case'modified':c=a.modifiedMs-b.modifiedMs;break;case'created':c=a.createdMs-b.createdMs;break;case'size':c=a.size-b.size;break;case'type':c=fileCategory(a).localeCompare(fileCategory(b))||natCmp(a.name,b.name);break;case'ext':c=(a.ext||'zzz').localeCompare(b.ext||'zzz')||natCmp(a.name,b.name);break;default:c=natCmp(a.name,b.name)}return sortAsc?c:-c})}
+function filterEnt(){const t=ct(),q=t.search.toLowerCase();t.filtered=q?t.entries.filter(e=>e.name.toLowerCase().includes(q)):[...t.entries];buildContent()}
+
+// ═══ NAV ═══
+async function nav(dir,addH=true){const t=ct();t.path=dir;if(addH){t.hist=t.hist.slice(0,t.hi+1);t.hist.push(dir);t.hi=t.hist.length-1}t.sel=new Set();t.search='';loadFolderSort(dir);renderTabs();renderABar();renderSB();renderTB();updTitle();await loadDir()}
+async function loadDir(){const t=ct(),el=document.getElementById('content');el.innerHTML='<div class="loading">Loading...</div>';thumbAbort++;const r=await api.readdir(t.path);if(r.ok){t.entries=r.entries;sortEnt();filterEnt()}else el.innerHTML=`<div class="empty"><div class="big">⚠️</div><div>${r.error}</div></div>`}
+
+function renderABar(){const t=ct(),parts=t.path.split('/').filter(Boolean);let ph=`<span class="ps${!parts.length?' c':''}" onclick="nav('/')">/</span>`;let acc='';for(let i=0;i<parts.length;i++){acc+='/'+parts[i];ph+=`<span class="psep">›</span><span class="ps${i===parts.length-1?' c':''}" onclick="nav('${esc(acc)}')">${parts[i]}</span>`}document.getElementById('abar').innerHTML=`<button class="nb" onclick="goBack()" ${t.hi<=0?'disabled':''}>←</button><button class="nb" onclick="goFwd()" ${t.hi>=t.hist.length-1?'disabled':''}>→</button><button class="nb" onclick="goUp()" ${t.path==='/'?'disabled':''}>↑</button><div class="pb">${ph}</div><div class="sbox"><span style="font-size:13px;color:var(--t3)">🔍</span><input value="${t.search||''}" oninput="ct().search=this.value;filterEnt()" placeholder="Search"></div>`}
+
+function renderSB(){const t=ct(),sb=document.getElementById('sidebar');const quick=[{n:'Home',i:'🏠',p:qp.home},{n:'Desktop',i:'🖥️',p:qp.desktop},{n:'Documents',i:'📄',p:qp.documents},{n:'Downloads',i:'⬇️',p:qp.downloads},{n:'Music',i:'🎵',p:qp.music},{n:'Pictures',i:'🖼️',p:qp.pictures},{n:'Videos',i:'🎬',p:qp.videos},{n:'Trash',i:'🗑️',p:qp.trash}];let h='<div class="st">Quick Access</div>';for(const q of quick)h+=`<div class="si${t.path===q.p?' a':''}" onclick="nav('${esc(q.p)}')"><span class="ico">${q.i}</span>${q.n}</div>`;h+='<div class="st">Favourites <button onclick="addFav()">+</button></div>';for(let i=0;i<bm.favourites.length;i++){const f=bm.favourites[i],n=f.split('/').filter(Boolean).pop()||'/';h+=`<div class="si${t.path===f?' a':''}" onclick="nav('${esc(f)}')"><span class="ico">⭐</span>${n}<span class="rm" onclick="event.stopPropagation();rmFav(${i})">✕</span></div>`}h+='<div class="st">Bookmarks <button onclick="addBm()">+</button></div>';for(let i=0;i<bm.bookmarks.length;i++){const b2=bm.bookmarks[i],n=b2.split('/').filter(Boolean).pop()||'/';h+=`<div class="si${t.path===b2?' a':''}" onclick="nav('${esc(b2)}')"><span class="ico">🔖</span>${n}<span class="rm" onclick="event.stopPropagation();rmBmk(${i})">✕</span></div>`}h+='<div class="st">Network <button onclick="showNetDlg()">+</button></div>';for(let i=0;i<netLoc.locations.length;i++){const nl=netLoc.locations[i];h+=`<div class="si" onclick="mountNet(${i})"><span class="ico">🌐</span>${nl.name||nl.host}<span class="rm" onclick="event.stopPropagation();rmNet(${i})">✕</span></div>`}h+='<div class="st" style="margin-top:8px">System</div>';h+=`<div class="si" onclick="nav('/')"><span class="ico">💻</span>Root (/)</div>`;sb.innerHTML=h}
+
+// ═══ BUILD CONTENT — builds DOM once, then thumbs load into existing elements ═══
+function buildContent(){
+  const t=ct(),el=document.getElementById('content');
+  if(!t.filtered.length){el.innerHTML='<div class="empty"><div class="big">📂</div><div>This folder is empty</div></div>';updStat();return}
+
+  // Group
+  let groups;
+  if(groupBy==='type'){groups={};for(const e of t.filtered){const c=fileCategory(e);if(!groups[c])groups[c]=[];groups[c].push(e)}}
+  else if(groupBy==='date'){groups={};for(const e of t.filtered){const d=e.modified||'Unknown';if(!groups[d])groups[d]=[];groups[d].push(e)}}
+  else groups={'':t.filtered};
+
+  let html='';
+  for(const[gn,items]of Object.entries(groups)){
+    if(gn)html+=`<div class="group-hdr">${gn}</div>`;
+    if(vm==='list'){
+      const ar=col=>sortBy===col?(sortAsc?'▲':'▼'):'';
+      html+=`<div class="lh"><span class="${sortBy==='name'?'sorted':''}" onclick="setSortCol('name')">Name ${ar('name')}</span><span class="${sortBy==='size'?'sorted':''}" onclick="setSortCol('size')">Size ${ar('size')}</span><span class="${sortBy==='type'?'sorted':''}" onclick="setSortCol('type')">Type ${ar('type')}</span><span class="${sortBy==='modified'?'sorted':''}" onclick="setSortCol('modified')">Modified ${ar('modified')}</span></div>`;
+    }
+    const isGrid=vm==='grid',isTile=vm==='tiles';
+    if(isGrid)html+='<div class="gv">';
+    if(isTile)html+='<div class="tv">';
+    for(const e of items){
+      const p=esc(e.path),sel=t.sel.has(e.name)?'sel':'';
+      const dragAttr=`draggable="true" ondragstart="nDrag(event,'${p}')"`;
+      const dropAttr=e.isDirectory?`ondragover="dov(event)" ondragleave="dlv(event)" ondrop="drp(event,'${p}')"`:''
+      const click=`onclick="event.stopPropagation();sel(event,'${esc(e.name)}')" ondblclick="openItem('${p}',${e.isDirectory},${e.isImage})" oncontextmenu="showCtx(event,'${p}',${e.isDirectory},${e.isImage},${e.isVideo||false})"`;
+      const hasThumb=e.isImage||e.isVideo;
+      const cachedUrl=hasThumb?thumbCache[e.path]:null;
+      const imgTag=hasThumb?`<img data-fpath="${e.path}" src="${cachedUrl||''}">`:`<span class="fi">${ico(e)}</span>`;
+
+      if(isGrid){
+        html+=`<div class="gi ${sel}" data-name="${e.name}" ${click} ${dragAttr} ${dropAttr}><div class="th">${imgTag}${e.isVideo?'<span class="vbadge">▶</span>':''}</div><div class="fn">${e.name}</div></div>`;
+      } else if(isTile){
+        html+=`<div class="ti ${sel}" data-name="${e.name}" ${click} ${dragAttr} ${dropAttr}><div class="th">${imgTag}</div><div class="tinfo"><div class="tname">${e.name}</div><div class="tmeta">${e.isDirectory?'Folder':fmt(e.size)}</div><div class="tdate">${e.modified}</div></div></div>`;
+      } else {
+        const tp=e.isDirectory?'Folder':e.isVideo?'Video':e.ext?(e.ext.toUpperCase()+' File'):'File';
+        html+=`<div class="li ${sel}" data-name="${e.name}" ${click} ${dragAttr} ${dropAttr}><div class="ln">${imgTag}<span>${e.name}</span></div><span class="lm">${e.isDirectory?'':fmt(e.size)}</span><span class="lm">${tp}</span><span class="lm">${e.modified}</span></div>`;
+      }
+    }
+    if(isGrid)html+='</div>';
+    if(isTile)html+='</div>';
+  }
+  el.innerHTML=html;
+  // Build direct element reference map (no CSS selector ever used for thumb assignment)
+  imgElementMap=new Map();
+  el.querySelectorAll('img[data-fpath]').forEach(imgEl=>{
+    const fpath=imgEl.getAttribute('data-fpath');
+    if(fpath) imgElementMap.set(fpath,imgEl);
+  });
+  updStat();
+  el.scrollTop=t.scroll||0;
+  loadVisibleThumbs();
+}
+
+// ═══ RACE-SAFE THUMBNAIL PIPELINE ═══
+// Every <img> gets a data-reqid. Before applying a URL, we verify the reqid still matches.
+// This prevents stale async responses from overwriting correct thumbnails.
+
+const PLACEHOLDER='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>';
+let debugLines=[];
+function dbg(obj){debugLines.push({...obj,ts:Date.now()});if(debugLines.length>500)debugLines.shift()}
+
+function requestThumb(fpath, imgEl){
+  // If already cached, apply immediately — no async, no race
+  if(thumbCache[fpath]){
+    imgEl.src=thumbCache[fpath];
+    imgEl.dataset.reqid='cached';
+    dbg({event:'thumb_cache_hit',path:fpath});
+    return;
+  }
+  // Assign unique request ID to this element
+  const rid=++globalReqId;
+  imgEl.dataset.reqid=String(rid);
+  imgEl.src=PLACEHOLDER; // reset to prevent showing stale image
+
+  const isVid=fpath.match(/\.(mp4|avi|mkv|mov|webm|flv|wmv)$/i);
+  const promise=isVid?api.getVideoThumb(fpath):api.getThumb(fpath);
+
+  promise.then(url=>{
+    // CRITICAL: verify this element still expects THIS request
+    if(imgEl.dataset.reqid!==String(rid)){
+      dbg({event:'thumb_stale_skip',path:fpath,rid,currentRid:imgEl.dataset.reqid});
+      return; // element was reassigned to a different request — discard
+    }
+    // Verify element still has the same fpath (double check)
+    if(imgEl.dataset.fpath!==fpath){
+      dbg({event:'thumb_path_mismatch',expected:fpath,actual:imgEl.dataset.fpath,rid});
+      return;
+    }
+    if(url){
+      thumbCache[fpath]=url;
+      imgEl.src=url;
+      dbg({event:'thumb_assign_ok',path:fpath,rid});
+    } else {
+      dbg({event:'thumb_null',path:fpath,rid});
+    }
+  });
+}
+
+async function loadVisibleThumbs(){
+  const myAbort=++thumbAbort;
+  const contentEl=document.getElementById('content');
+
+  // First: batch check main process cache for any we don't have locally
+  const uncachedPaths=[];
+  for(const[fpath,el]of imgElementMap){
+    if(!thumbCache[fpath])uncachedPaths.push(fpath);
+    else{el.src=thumbCache[fpath];el.dataset.reqid='cached';}
+  }
+
+  if(uncachedPaths.length){
+    const mainCached=await api.getCachedThumbs(uncachedPaths);
+    for(const[p,url]of Object.entries(mainCached)){
+      if(url){
+        thumbCache[p]=url;
+        const el=imgElementMap.get(p);
+        if(el){el.src=url;el.dataset.reqid='cached';}
+      }
+    }
+  }
+
+  if(thumbAbort!==myAbort)return;
+
+  // Now load remaining uncached, prioritized by viewport
+  const cRect=contentEl.getBoundingClientRect();
+  const vMid=contentEl.scrollTop+contentEl.clientHeight/2;
+  const toLoad=[];
+  for(const[fpath,el]of imgElementMap){
+    if(thumbCache[fpath])continue; // already done
+    const r=el.getBoundingClientRect();
+    const elTop=r.top-cRect.top+contentEl.scrollTop;
+    const isVis=r.top>=cRect.top&&r.bottom<=cRect.bottom;
+    toLoad.push({fpath,el,dist:isVis?0:Math.abs(elTop-vMid)});
+  }
+  toLoad.sort((a,b)=>a.dist-b.dist);
+
+  // Fire requests — each has its own reqid, so stale responses self-discard
+  for(const item of toLoad){
+    if(thumbAbort!==myAbort)return;
+    requestThumb(item.fpath,item.el);
+    // Small yield to avoid blocking UI — process 5 at a time then yield
+    if(toLoad.indexOf(item)%5===4) await new Promise(r=>setTimeout(r,0));
+  }
+}
+
+// On scroll: re-prioritize remaining uncached thumbs
+let scrollTmr=null;
+document.getElementById('content').addEventListener('scroll',()=>{
+  clearTimeout(scrollTmr);
+  scrollTmr=setTimeout(()=>{
+    // Only re-request thumbs that haven't loaded yet
+    loadVisibleThumbs();
+  },200);
+});
+
+// ═══ SELECTION — toggle CSS class, NO re-render ═══
+function sel(ev,name){
+  const t=ct();
+  if(ev.ctrlKey){t.sel.has(name)?t.sel.delete(name):t.sel.add(name)}
+  else if(ev.shiftKey){const names=t.filtered.map(e=>e.name),last=[...t.sel].pop();if(last){const a=names.indexOf(last),b=names.indexOf(name),[lo,hi]=a<b?[a,b]:[b,a];for(let i=lo;i<=hi;i++)t.sel.add(names[i])}else t.sel.add(name)}
+  else t.sel=new Set([name]);
+  syncSelectionCSS();
+}
+function syncSelectionCSS(){
+  const t=ct();
+  document.querySelectorAll('.gi,.li,.ti').forEach(el=>{
+    const name=el.getAttribute('data-name');
+    if(name&&t.sel.has(name))el.classList.add('sel');else el.classList.remove('sel');
+  });
+  updStat();
+}
+function clrSel(ev){if(ev&&ev.target!==document.getElementById('content'))return;ct().sel=new Set();syncSelectionCSS();hideCtx()}
+document.getElementById('content').addEventListener('click',e=>{if(e.target===document.getElementById('content')||e.target.closest('.gv,.tv'))if(!e.target.closest('.gi,.li,.ti')){ct().sel=new Set();syncSelectionCSS();hideCtx()}});
+
+function selAbove(){const t=ct(),names=t.filtered.map(e=>e.name),cur=[...t.sel][0];if(!cur)return;const idx=names.indexOf(cur);for(let i=0;i<=idx;i++)t.sel.add(names[i]);syncSelectionCSS()}
+function selBelow(){const t=ct(),names=t.filtered.map(e=>e.name),cur=[...t.sel].pop();if(!cur)return;const idx=names.indexOf(cur);for(let i=idx;i<names.length;i++)t.sel.add(names[i]);syncSelectionCSS()}
+
+function updTitle(){document.getElementById('ttl').textContent=(ct().path.split('/').filter(Boolean).pop()||'/')+ ' — File Explorer'}
+function updStat(){const t=ct();const imgs=t.filtered.filter(e=>e.isImage).length,dirs=t.filtered.filter(e=>e.isDirectory).length,files=t.filtered.length-dirs;let s=`${t.filtered.length} items`;if(dirs)s+=` · ${dirs} folders`;if(files)s+=` · ${files} files`;if(imgs)s+=` · ${imgs} images`;if(t.sel.size)s+=`  |  ${t.sel.size} selected`;document.getElementById('status').textContent=s}
+
+// ═══ ACTIONS ═══
+function openItem(path,isDir,isImage){
+  if(isDir)nav(path);
+  else if(isImage){
+    // Pass sorted image list from this exact filtered view
+    const t=ct();
+    const sortedPaths=t.filtered.filter(e=>e.isImage).map(e=>e.path);
+    api.openPhotos(t.path,path,sortedPaths);
+  }
+  else api.openFile(path);
+}
+function openPhotosGallery(){api.openPhotos(ct().path,'',[])}
+function goBack(){const t=ct();if(t.hi>0){t.hi--;nav(t.hist[t.hi],false)}}
+function goFwd(){const t=ct();if(t.hi<t.hist.length-1){t.hi++;nav(t.hist[t.hi],false)}}
+function goUp(){const t=ct();if(t.path!=='/')nav(t.path.replace(/\/[^/]+\/?$/,'')||'/')}
+function setVM(m){vm=m;renderTB();buildContent()}
+function setSortCol(col){if(sortBy===col)sortAsc=!sortAsc;else{sortBy=col;sortAsc=true}doSort()}
+async function newFolder(){const n=prompt('New folder name:');if(n){await api.mkdir(ct().path+'/'+n);await loadDir()}}
+async function renameSel(){const t=ct(),name=[...t.sel][0];if(!name)return;const e=t.entries.find(x=>x.name===name);if(!e)return;const nn=prompt('Rename to:',e.name);if(nn&&nn!==e.name){await api.rename(e.path,nn);await loadDir()}}
+async function deleteSel(){const t=ct();if(!t.sel.size)return;if(!confirm(`Move ${t.sel.size} item(s) to trash?`))return;for(const n of t.sel){const e=t.entries.find(x=>x.name===n);if(e)await api.trash(e.path)}t.sel=new Set();await loadDir()}
+async function permDeleteSel(){const t=ct();if(!t.sel.size)return;const paths=[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean);const r=await api.permanentDelete(paths);if(r.ok){t.sel=new Set();await loadDir()}}
+function cutSel(){const t=ct();api.clipSet({paths:[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean),action:'cut'})}
+function copySel(){const t=ct();api.clipSet({paths:[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean),action:'copy'})}
+async function pasteHere(){const clip=await api.clipGet();if(!clip.paths||!clip.paths.length)return;for(const p of clip.paths)await api.copy(p,ct().path);if(clip.action==='cut'){for(const p of clip.paths)await api.trash(p);api.clipSet({paths:[],action:''})}await loadDir()}
+async function toggleTheme(){settings.theme=settings.theme==='dark'?'light':'dark';applyTheme();renderTB();await api.saveCfg('settings',settings)}
+
+async function addFav(){const p=ct().path;if(!bm.favourites.includes(p)){bm.favourites.push(p);await api.saveCfg('bookmarks',bm);renderSB()}}
+async function rmFav(i){bm.favourites.splice(i,1);await api.saveCfg('bookmarks',bm);renderSB()}
+async function addBm(){const p=ct().path;if(!bm.bookmarks.includes(p)){bm.bookmarks.push(p);await api.saveCfg('bookmarks',bm);renderSB()}}
+async function rmBmk(i){bm.bookmarks.splice(i,1);await api.saveCfg('bookmarks',bm);renderSB()}
+
+function showNetDlg(){document.getElementById('modals').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)clsMod()"><div class="modal"><h3>🌐 Add Network Location</h3><label>Type</label><select id="nType"><option value="smb">SMB/CIFS</option></select><label>Display Name</label><input type="text" id="nName" placeholder="My Server"><label>Host</label><input type="text" id="nHost" placeholder="192.168.1.100"><label>Share</label><input type="text" id="nShare" placeholder="shared"><label>User</label><input type="text" id="nUser"><label>Password</label><input type="password" id="nPass"><div style="margin-top:12px"><button class="tb" onclick="scanNet()" style="background:var(--hv)">🔍 Scan</button> <span id="scanR" style="font-size:12px;color:var(--t3)"></span></div><div class="mbtns"><button class="mbtn s" onclick="clsMod()">Cancel</button><button class="mbtn p" onclick="saveNetLoc()">Add</button></div></div></div>`}
+function clsMod(){document.getElementById('modals').innerHTML=''}
+async function scanNet(){document.getElementById('scanR').textContent='Scanning...';const h=await api.netScan();if(h.length){document.getElementById('scanR').textContent='Found: '+h.map(x=>x.hostname||x.address).join(', ');if(h[0])document.getElementById('nHost').value=h[0].address||h[0].hostname}else document.getElementById('scanR').textContent='None found'}
+async function saveNetLoc(){const loc={type:document.getElementById('nType').value,name:document.getElementById('nName').value,host:document.getElementById('nHost').value,share:document.getElementById('nShare').value,user:document.getElementById('nUser').value,pass:document.getElementById('nPass').value};if(!loc.host)return alert('Host required');netLoc.locations.push(loc);await api.saveCfg('networks',netLoc);renderSB();clsMod()}
+async function rmNet(i){netLoc.locations.splice(i,1);await api.saveCfg('networks',netLoc);renderSB()}
+async function mountNet(i){const r=await api.netMount(netLoc.locations[i]);if(r.ok)nav(r.mountPath);else alert('Mount failed: '+r.error)}
+
+// ═══ DRAG ═══
+function nDrag(ev,path){ev.preventDefault();api.nativeDrag(path)}
+function dov(ev){ev.preventDefault();ev.dataTransfer.dropEffect='copy';ev.currentTarget.classList.add('dov')}
+function dlv(ev){ev.currentTarget.classList.remove('dov')}
+async function drp(ev,dest){ev.preventDefault();ev.currentTarget.classList.remove('dov');const files=ev.dataTransfer.files;if(files&&files.length){for(const f of files){if(f.path)await api.copy(f.path,dest)}await loadDir()}}
+// Drop on content area = drop into current folder
+document.getElementById('content').addEventListener('dragover',e=>{e.preventDefault();e.dataTransfer.dropEffect='copy'});
+document.getElementById('content').addEventListener('drop',async e=>{e.preventDefault();const files=e.dataTransfer.files;if(files&&files.length){for(const f of files){if(f.path)await api.copy(f.path,ct().path)}await loadDir()}});
+
+// ═══ RUBBER-BAND SELECTION — updates CSS classes only, no re-render ═══
+let rbActive=false,rbSX=0,rbSY=0;
+const rbEl=document.getElementById('rubberband');
+document.getElementById('content').addEventListener('mousedown',e=>{
+  if(e.button!==0||e.target.closest('.gi,.li,.ti,.lh,.group-hdr'))return;
+  rbActive=true;rbSX=e.clientX;rbSY=e.clientY;
+  rbEl.style.left=e.clientX+'px';rbEl.style.top=e.clientY+'px';rbEl.style.width='0';rbEl.style.height='0';rbEl.style.display='block';
+});
+document.addEventListener('mousemove',e=>{
+  if(!rbActive)return;
+  const x=Math.min(rbSX,e.clientX),y=Math.min(rbSY,e.clientY),w=Math.abs(e.clientX-rbSX),h=Math.abs(e.clientY-rbSY);
+  rbEl.style.left=x+'px';rbEl.style.top=y+'px';rbEl.style.width=w+'px';rbEl.style.height=h+'px';
+  const rect={left:x,top:y,right:x+w,bottom:y+h};
+  const t=ct();t.sel=new Set();
+  document.querySelectorAll('.gi,.li,.ti').forEach(el=>{
+    const r=el.getBoundingClientRect();
+    if(r.left<rect.right&&r.right>rect.left&&r.top<rect.bottom&&r.bottom>rect.top){
+      const nm=el.getAttribute('data-name');if(nm)t.sel.add(nm);el.classList.add('sel');
+    } else el.classList.remove('sel');
+  });
+  updStat();
+});
+document.addEventListener('mouseup',()=>{if(!rbActive)return;rbActive=false;rbEl.style.display='none'});
+
+// ═══ CONTEXT MENU ═══
+function showCtx(ev,path,isDir,isImage,isVideo){ev.preventDefault();ev.stopPropagation();const m=document.getElementById('ctx');let h='';
+h+=`<button class="ci" onclick="openItem('${esc(path)}',${isDir},${isImage});hideCtx()">📂 Open</button>`;
+if(isDir)h+=`<button class="ci" onclick="addTab('${esc(path)}');hideCtx()">📑 Open in New Tab</button>`;
+if(isImage)h+=`<button class="ci" onclick="openItem('${esc(path)}',false,true);hideCtx()">🖼️ View in Photos</button>`;
+h+=`<button class="ci" onclick="api.openTerminal('${esc(isDir?path:ct().path)}');hideCtx()">🖥️ Terminal Here</button>`;
+h+='<div class="csp"></div>';
+h+=`<button class="ci" onclick="api.clipSet({paths:['${esc(path)}'],action:'cut'});hideCtx()">✂️ Cut</button>`;
+h+=`<button class="ci" onclick="api.clipSet({paths:['${esc(path)}'],action:'copy'});hideCtx()">📋 Copy</button>`;
+h+='<div class="csp"></div>';
+h+=`<button class="ci" onclick="renCtx('${esc(path)}')">✏️ Rename</button>`;
+h+=`<button class="ci" onclick="delCtx('${esc(path)}')">🗑️ Trash</button>`;
+h+=`<button class="ci" onclick="permDelCtx('${esc(path)}')">⚠️ Delete Permanently</button>`;
+h+='<div class="csp"></div>';
+h+=`<button class="ci" onclick="selAbove();hideCtx()">⬆️ Select all above</button>`;
+h+=`<button class="ci" onclick="selBelow();hideCtx()">⬇️ Select all below</button>`;
+if(isDir){h+='<div class="csp"></div>';h+=`<button class="ci" onclick="addFavP('${esc(path)}')">⭐ Favourite</button>`;h+=`<button class="ci" onclick="addBmP('${esc(path)}')">🔖 Bookmark</button>`}
+h+='<div class="csp"></div>';h+=`<button class="ci" onclick="showProps('${esc(path)}')">ℹ️ Properties</button>`;
+m.innerHTML=h;m.style.left=Math.min(ev.clientX,innerWidth-220)+'px';m.style.top=Math.min(ev.clientY,innerHeight-300)+'px';m.style.display='block'}
+function hideCtx(){document.getElementById('ctx').style.display='none'}
+document.addEventListener('click',e=>{if(!e.target.closest('.ctx'))hideCtx()});
+async function renCtx(p){hideCtx();const n=p.split('/').pop(),nn=prompt('Rename:',n);if(nn&&nn!==n){await api.rename(p,nn);await loadDir()}}
+async function delCtx(p){hideCtx();if(confirm(`Trash "${p.split('/').pop()}"?`)){await api.trash(p);ct().sel=new Set();await loadDir()}}
+async function permDelCtx(p){hideCtx();await api.permanentDelete([p]);ct().sel=new Set();await loadDir()}
+async function showProps(p){hideCtx();const r=await api.stat(p);if(r.ok){const s=r.stats;alert(`Path: ${p}\nSize: ${fmt(s.size)}\nCreated: ${s.created?.split('T')[0]||'N/A'}\nModified: ${s.modified?.split('T')[0]||'N/A'}\nPermissions: ${s.permissions}`)}}
+async function addFavP(p){if(!bm.favourites.includes(p)){bm.favourites.push(p);await api.saveCfg('bookmarks',bm);renderSB()}hideCtx()}
+async function addBmP(p){if(!bm.bookmarks.includes(p)){bm.bookmarks.push(p);await api.saveCfg('bookmarks',bm);renderSB()}hideCtx()}
+
+// ═══ KEYBOARD ═══
+document.addEventListener('keydown',e=>{
+  if(document.querySelector('.modal-bg'))return;
+  if(e.key==='Backspace'||(e.altKey&&e.key==='ArrowLeft')){e.preventDefault();goBack()}
+  if(e.altKey&&e.key==='ArrowRight')goFwd();if(e.altKey&&e.key==='ArrowUp')goUp();
+  if(e.key==='Delete'&&e.shiftKey){e.preventDefault();permDeleteSel()}
+  else if(e.key==='Delete')deleteSel();
+  if(e.key==='F2')renameSel();if(e.key==='F5')loadDir();
+  if(e.ctrlKey&&e.key==='c'){e.preventDefault();copySel()}
+  if(e.ctrlKey&&e.key==='x'){e.preventDefault();cutSel()}
+  if(e.ctrlKey&&e.key==='v'){e.preventDefault();pasteHere()}
+  if(e.ctrlKey&&e.key==='t'){e.preventDefault();addTab(ct().path)}
+  if(e.ctrlKey&&e.key==='w'){e.preventDefault();if(tabs.length>1)closeTab(atid)}
+  if(e.ctrlKey&&e.key==='a'){e.preventDefault();ct().sel=new Set(ct().filtered.map(x=>x.name));syncSelectionCSS()}
+  if(e.shiftKey&&e.key==='Home'){e.preventDefault();selAbove()}
+  if(e.shiftKey&&e.key==='End'){e.preventDefault();selBelow()}
+  // F12: show debug log
+  if(e.key==='F12'){e.preventDefault();showDebugLog()}
+});
+
+function showDebugLog(){
+  const last50=debugLines.slice(-50).map(d=>JSON.stringify(d)).join('\n');
+  document.getElementById('modals').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)clsMod()"><div class="modal" style="width:600px;max-height:80vh;overflow:auto"><h3>🐛 Thumbnail Debug Log (last 50)</h3><pre style="font-size:11px;color:var(--t2);white-space:pre-wrap;max-height:50vh;overflow:auto;background:var(--hv);padding:8px;border-radius:4px">${last50||'No events logged yet'}</pre><div class="mbtns"><button class="mbtn s" onclick="clearThumbCache()">🗑️ Clear Thumb Cache</button><button class="mbtn s" onclick="clsMod()">Close</button></div></div></div>`;
+}
+
+async function clearThumbCache(){
+  thumbCache={};
+  dbg({event:'cache_cleared',source:'user'});
+  clsMod();
+  await loadDir(); // reload current folder
+}
+
+init();
+</script>
+</body>
+</html>
