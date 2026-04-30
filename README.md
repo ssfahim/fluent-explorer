@@ -1,4 +1,4 @@
-# Fluent Explorer
+# [Fluent Explorer](https://github.com/ssfahim/fluent-explorer/releases/tag/v1.0.0)
 
 **A Windows 11–styled File Manager & Photo Viewer built for Linux Mint (and other Linux distros)**
 
