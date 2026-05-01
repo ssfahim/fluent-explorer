@@ -295,10 +295,22 @@ function renderFilm(){
   if(s>0) h+=`<div style="min-width:${s*61}px;flex-shrink:0"></div>`;
   for(let i=s;i<e;i++){
     const t=images[i], url=thumbUrls[t.path]||'';
-    h+=`<div class="ft${i===vi?' a':''}" onclick="jumpTo(${i})">${url?`<img src="${url}">`:`<div style="width:100%;height:100%;background:#333"></div>`}</div>`;
+    h+=`<div class="ft${i===vi?' a':''}" onclick="jumpTo(${i})">${url?`<img src="${url}">`:`<img data-ftpath="${t.path}" src="" style="width:100%;height:100%;object-fit:cover;background:#333">`}</div>`;
   }
   fs.innerHTML=h;
   requestAnimationFrame(()=>{ const a=fs.querySelector('.ft.a'); if(a) a.scrollIntoView({behavior:'auto',block:'nearest',inline:'center'}); });
+  // Load filmstrip thumbs that aren't cached yet
+  loadFilmstripThumbs();
+}
+
+async function loadFilmstripThumbs(){
+  const imgs=[...document.querySelectorAll('img[data-ftpath]')];
+  for(const el of imgs){
+    const p=el.getAttribute('data-ftpath');
+    if(thumbUrls[p]){el.src=thumbUrls[p];continue}
+    const url=await api.getThumb(p);
+    if(url){thumbUrls[p]=url;el.src=url}
+  }
 }
 
 function zIn(){ zoom=Math.min(zoom+.25,5); apZ(); }

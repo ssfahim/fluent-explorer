@@ -88,7 +88,7 @@ select{font-family:inherit;color:var(--tx);background:var(--ib);border:1px solid
   <div class="toolbar" id="toolbar"></div>
   <div class="abar" id="abar"></div>
   <div class="body"><div class="sidebar" id="sidebar"></div><div class="content sz-md" id="content"></div></div>
-  <div class="statusbar" id="status"></div>
+  <div class="statusbar"><span id="status"></span><span style="margin-left:auto;display:flex;gap:12px" id="resmon"></span></div>
 </div>
 <div class="ctx" id="ctx" style="display:none"></div>
 <div id="modals"></div>
@@ -99,7 +99,8 @@ function natCmp(a,b){return a.localeCompare(b,undefined,{numeric:true,sensitivit
 
 let tabs=[],atid=null,vm='grid',qp={},bm={favourites:[],bookmarks:[]},settings={theme:'light'},sortPrefs={},netLoc={locations:[]},tc=0;
 let sortBy='name',sortAsc=true,groupBy='none';
-let iconSize='md'; // sm|md|lg|xl
+let iconSize='md';
+let memory={version:1,favourites:[],bookmarks:[],pinnedFolders:[],cachedFolders:[],recentPaths:[]};
 // Renderer-side thumb cache (URL strings). Persists within session.
 let thumbCache={};
 let thumbAbort=0;
@@ -121,7 +122,14 @@ async function init(){
   bm=await api.loadCfg('bookmarks',{favourites:[],bookmarks:[]});
   sortPrefs=await api.loadCfg('sortprefs',{});
   netLoc=await api.loadCfg('networks',{locations:[]});
+  memory=await api.memoryLoad();
   if(!bm.favourites)bm.favourites=[];if(!bm.bookmarks)bm.bookmarks=[];if(!netLoc.locations)netLoc.locations=[];
+  if(!memory.cachedFolders)memory.cachedFolders=[];if(!memory.recentPaths)memory.recentPaths=[];
+
+  // Migrate old bookmarks into persistent memory (one-time)
+  if(bm.favourites.length&&!memory.favourites?.length){memory.favourites=[...bm.favourites];memory.bookmarks=[...bm.bookmarks];await api.memorySave(memory)}
+  // Sync persistent memory back to working bookmarks
+  if(memory.favourites?.length&&!bm.favourites.length){bm.favourites=[...memory.favourites];bm.bookmarks=[...(memory.bookmarks||[])];await api.saveCfg('bookmarks',bm)}
 
   // Try to restore last session
   const session=await api.sessionLoad();
@@ -178,7 +186,22 @@ function renderTB(){
     <div class="vt"><button class="${vm==='grid'?'a':''}" onclick="setVM('grid')">⊞</button><button class="${vm==='list'?'a':''}" onclick="setVM('list')">☰</button><button class="${vm==='tiles'?'a':''}" onclick="setVM('tiles')">⊟</button></div>
     <div class="sp"></div>
     <button class="tb" onclick="clearSession()" title="Clear history & fresh start">🧹</button>
+    <button class="tb" onclick="toggleCacheFolder()" title="Toggle persistent thumb cache for this folder">${isFolderCached()?'📌 Cached':'📌 Cache'}</button>
     <button class="tb" onclick="toggleTheme()">${settings.theme==='dark'?'☀️':'🌙'}</button>`;
+}
+function isFolderCached(){return memory.cachedFolders&&memory.cachedFolders.includes(ct()?.path)}
+async function toggleCacheFolder(){
+  const p=ct().path;
+  if(memory.cachedFolders.includes(p)){
+    memory.cachedFolders=memory.cachedFolders.filter(x=>x!==p);
+    await api.memorySave(memory);renderTB();
+  } else {
+    memory.cachedFolders.push(p);
+    await api.memorySave(memory);renderTB();
+    // Pre-generate all thumbs for this folder in background
+    const r=await api.memoryCacheFolder(p);
+    if(r.ok)renderTB();
+  }
 }
 function setIconSize(sz){iconSize=sz;const el=document.getElementById('content');el.className='content sz-'+sz;settings.iconSize=sz;api.saveCfg('settings',settings)}
 
@@ -190,7 +213,41 @@ function filterEnt(){const t=ct(),q=t.search.toLowerCase();t.filtered=q?t.entrie
 
 // ═══ NAV ═══
 async function nav(dir,addH=true){const t=ct();t.path=dir;if(addH){t.hist=t.hist.slice(0,t.hi+1);t.hist.push(dir);t.hi=t.hist.length-1}t.sel=new Set();t.search='';loadFolderSort(dir);renderTabs();renderABar();renderSB();renderTB();updTitle();await loadDir()}
-async function loadDir(){const t=ct(),el=document.getElementById('content');el.innerHTML='<div class="loading">Loading...</div>';thumbAbort++;const r=await api.readdir(t.path);if(r.ok){t.entries=r.entries;sortEnt();filterEnt()}else el.innerHTML=`<div class="empty"><div class="big">⚠️</div><div>${r.error}</div></div>`}
+async function loadDir(){
+  const t=ct(),el=document.getElementById('content');
+  el.innerHTML='<div class="loading">Loading...</div>';
+  thumbAbort++;
+
+  // First try: get count to check if huge folder
+  const r=await api.readdirPaged(t.path, 0, 500);
+  if(!r.ok){el.innerHTML=`<div class="empty"><div class="big">⚠️</div><div>${r.error}</div></div>`;return}
+
+  t.entries=r.entries;
+
+  // If folder has more than 500 items, load the rest in background
+  if(r.hasMore){
+    let offset=500;
+    const loadMore=async()=>{
+      const r2=await api.readdirPaged(t.path, offset, 500);
+      if(r2.ok&&r2.entries.length){
+        t.entries=t.entries.concat(r2.entries);
+        offset+=500;
+        if(r2.hasMore) setTimeout(loadMore, 50); // yield between batches
+        else { sortEnt(); filterEnt(); } // final sort+render
+      }
+    };
+    // Sort and show what we have now, load rest in background
+    sortEnt(); filterEnt();
+    setTimeout(loadMore, 100);
+  } else {
+    sortEnt(); filterEnt();
+  }
+
+  // If this is a cached folder, sync for new files
+  if(memory.cachedFolders&&memory.cachedFolders.includes(t.path)){
+    api.memorySyncFolder(t.path);
+  }
+}
 
 function renderABar(){const t=ct(),parts=t.path.split('/').filter(Boolean);let ph=`<span class="ps${!parts.length?' c':''}" onclick="nav('/')">/</span>`;let acc='';for(let i=0;i<parts.length;i++){acc+='/'+parts[i];ph+=`<span class="psep">›</span><span class="ps${i===parts.length-1?' c':''}" onclick="nav('${esc(acc)}')">${parts[i]}</span>`}document.getElementById('abar').innerHTML=`<button class="nb" onclick="goBack()" ${t.hi<=0?'disabled':''}>←</button><button class="nb" onclick="goFwd()" ${t.hi>=t.hist.length-1?'disabled':''}>→</button><button class="nb" onclick="goUp()" ${t.path==='/'?'disabled':''}>↑</button><div class="pb">${ph}</div><div class="sbox"><span style="font-size:13px;color:var(--t3)">🔍</span><input value="${t.search||''}" oninput="ct().search=this.value;filterEnt()" placeholder="Search"></div>`}
 
@@ -376,6 +433,19 @@ function selBelow(){const t=ct(),names=t.filtered.map(e=>e.name),cur=[...t.sel].
 function updTitle(){document.getElementById('ttl').textContent=(ct().path.split('/').filter(Boolean).pop()||'/')+ ' — File Explorer'}
 function updStat(){const t=ct();const imgs=t.filtered.filter(e=>e.isImage).length,dirs=t.filtered.filter(e=>e.isDirectory).length,files=t.filtered.length-dirs;let s=`${t.filtered.length} items`;if(dirs)s+=` · ${dirs} folders`;if(files)s+=` · ${files} files`;if(imgs)s+=` · ${imgs} images`;if(t.sel.size)s+=`  |  ${t.sel.size} selected`;document.getElementById('status').textContent=s}
 
+// Resource monitor — updates every 3 seconds
+setInterval(async()=>{
+  try{
+    const r=await api.getResourceUsage();
+    const el=document.getElementById('resmon');
+    if(el){
+      const ramColor=r.rssMB>800?'#e81123':r.rssMB>500?'#f0ad4e':'var(--t3)';
+      const cpuColor=r.loadPct>75?'#e81123':r.loadPct>50?'#f0ad4e':'var(--t3)';
+      el.innerHTML=`<span style="color:${ramColor}" title="App RAM usage">RAM: ${r.rssMB}MB</span><span style="color:${cpuColor}" title="System CPU load">CPU: ${r.loadPct}%</span><span style="color:var(--t3)" title="Thumbnail queue">Q: ${r.qLen}</span><span style="color:var(--t3)" title="System free RAM">Free: ${r.freeMB}MB</span>`;
+    }
+  }catch{}
+},3000);
+
 // ═══ ACTIONS ═══
 function openItem(path,isDir,isImage){
   if(isDir)nav(path);
@@ -394,18 +464,35 @@ function goUp(){const t=ct();if(t.path!=='/')nav(t.path.replace(/\/[^/]+\/?$/,''
 function setVM(m){vm=m;renderTB();buildContent()}
 function setSortCol(col){if(sortBy===col)sortAsc=!sortAsc;else{sortBy=col;sortAsc=true}doSort()}
 async function newFolder(){const n=prompt('New folder name:');if(n){await api.mkdir(ct().path+'/'+n);await loadDir()}}
-async function renameSel(){const t=ct(),name=[...t.sel][0];if(!name)return;const e=t.entries.find(x=>x.name===name);if(!e)return;const nn=prompt('Rename to:',e.name);if(nn&&nn!==e.name){await api.rename(e.path,nn);await loadDir()}}
+async function renameSel(){const t=ct(),name=[...t.sel][0];if(!name)return;const e=t.entries.find(x=>x.name===name);if(!e)return;const nn=prompt('Rename to:',e.name);if(nn&&nn!==e.name){const r=await api.smartRename(e.path,nn);if(r.ok)await loadDir();else if(r.error)alert('Rename failed: '+r.error)}}
 async function deleteSel(){const t=ct();if(!t.sel.size)return;if(!confirm(`Move ${t.sel.size} item(s) to trash?`))return;for(const n of t.sel){const e=t.entries.find(x=>x.name===n);if(e)await api.trash(e.path)}t.sel=new Set();await loadDir()}
 async function permDeleteSel(){const t=ct();if(!t.sel.size)return;const paths=[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean);const r=await api.permanentDelete(paths);if(r.ok){t.sel=new Set();await loadDir()}}
-function cutSel(){const t=ct();api.clipSet({paths:[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean),action:'cut'})}
-function copySel(){const t=ct();api.clipSet({paths:[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean),action:'copy'})}
-async function pasteHere(){const clip=await api.clipGet();if(!clip.paths||!clip.paths.length)return;for(const p of clip.paths)await api.copy(p,ct().path);if(clip.action==='cut'){for(const p of clip.paths)await api.trash(p);api.clipSet({paths:[],action:''})}await loadDir()}
+async function cutSel(){const t=ct();const paths=[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean);if(!paths.length)return;await api.clipSet({paths,action:'cut'})}
+async function copySel(){const t=ct();const paths=[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean);if(!paths.length)return;await api.clipSet({paths,action:'copy'})}
+async function pasteHere(){
+  const clip=await api.clipGet();
+  if(!clip||!clip.paths||!clip.paths.length)return;
+  const successPaths=[];
+  for(const p of clip.paths){
+    const r=await api.smartCopy(p,ct().path);
+    if(r&&r.ok&&r.action!=='skipped') successPaths.push(p);
+    else if(!r||!r.ok) alert('Failed to paste: '+p.split('/').pop()+'\n'+(r?.error||'Unknown error'));
+  }
+  if(clip.action==='cut'){
+    // ONLY trash originals that were confirmed copied
+    if(successPaths.length){
+      for(const p of successPaths) await api.trash(p);
+    }
+    await api.clipSet({paths:[],action:''});
+  }
+  await loadDir();
+}
 async function toggleTheme(){settings.theme=settings.theme==='dark'?'light':'dark';applyTheme();renderTB();await api.saveCfg('settings',settings)}
 
-async function addFav(){const p=ct().path;if(!bm.favourites.includes(p)){bm.favourites.push(p);await api.saveCfg('bookmarks',bm);renderSB()}}
-async function rmFav(i){bm.favourites.splice(i,1);await api.saveCfg('bookmarks',bm);renderSB()}
-async function addBm(){const p=ct().path;if(!bm.bookmarks.includes(p)){bm.bookmarks.push(p);await api.saveCfg('bookmarks',bm);renderSB()}}
-async function rmBmk(i){bm.bookmarks.splice(i,1);await api.saveCfg('bookmarks',bm);renderSB()}
+async function addFav(){const p=ct().path;if(!bm.favourites.includes(p)){bm.favourites.push(p);await api.saveCfg('bookmarks',bm);memory.favourites=bm.favourites;await api.memorySave(memory);renderSB()}}
+async function rmFav(i){bm.favourites.splice(i,1);await api.saveCfg('bookmarks',bm);memory.favourites=bm.favourites;await api.memorySave(memory);renderSB()}
+async function addBm(){const p=ct().path;if(!bm.bookmarks.includes(p)){bm.bookmarks.push(p);await api.saveCfg('bookmarks',bm);memory.bookmarks=bm.bookmarks;await api.memorySave(memory);renderSB()}}
+async function rmBmk(i){bm.bookmarks.splice(i,1);await api.saveCfg('bookmarks',bm);memory.bookmarks=bm.bookmarks;await api.memorySave(memory);renderSB()}
 
 function showNetDlg(){document.getElementById('modals').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)clsMod()"><div class="modal"><h3>🌐 Add Network Location</h3>
 <label>Type</label><select id="nType"><option value="smb">SMB/CIFS (Windows/Samba)</option><option value="nfs">NFS</option></select>
@@ -444,10 +531,10 @@ async function mountNet(i){
 function nDrag(ev,path){ev.preventDefault();api.nativeDrag(path)}
 function dov(ev){ev.preventDefault();ev.dataTransfer.dropEffect='copy';ev.currentTarget.classList.add('dov')}
 function dlv(ev){ev.currentTarget.classList.remove('dov')}
-async function drp(ev,dest){ev.preventDefault();ev.currentTarget.classList.remove('dov');const files=ev.dataTransfer.files;if(files&&files.length){for(const f of files){if(f.path)await api.copy(f.path,dest)}await loadDir()}}
+async function drp(ev,dest){ev.preventDefault();ev.currentTarget.classList.remove('dov');const files=ev.dataTransfer.files;if(files&&files.length){for(const f of files){if(f.path)await api.smartCopy(f.path,dest)}await loadDir()}}
 // Drop on content area = drop into current folder
 document.getElementById('content').addEventListener('dragover',e=>{e.preventDefault();e.dataTransfer.dropEffect='copy'});
-document.getElementById('content').addEventListener('drop',async e=>{e.preventDefault();const files=e.dataTransfer.files;if(files&&files.length){for(const f of files){if(f.path)await api.copy(f.path,ct().path)}await loadDir()}});
+document.getElementById('content').addEventListener('drop',async e=>{e.preventDefault();const files=e.dataTransfer.files;if(files&&files.length){for(const f of files){if(f.path)await api.smartCopy(f.path,ct().path)}await loadDir()}});
 
 // ═══ RUBBER-BAND SELECTION — updates CSS classes only, no re-render ═══
 let rbActive=false,rbSX=0,rbSY=0;
@@ -491,15 +578,24 @@ h+=`<button class="ci" onclick="selAbove();hideCtx()">⬆️ Select all above</b
 h+=`<button class="ci" onclick="selBelow();hideCtx()">⬇️ Select all below</button>`;
 if(isDir){h+='<div class="csp"></div>';h+=`<button class="ci" onclick="addFavP('${esc(path)}')">⭐ Favourite</button>`;h+=`<button class="ci" onclick="addBmP('${esc(path)}')">🔖 Bookmark</button>`}
 h+='<div class="csp"></div>';h+=`<button class="ci" onclick="showProps('${esc(path)}')">ℹ️ Properties</button>`;
+h+=`<button class="ci" onclick="showOpenWith('${esc(path)}')">🔧 Open With...</button>`;
 m.innerHTML=h;m.style.left=Math.min(ev.clientX,innerWidth-220)+'px';m.style.top=Math.min(ev.clientY,innerHeight-300)+'px';m.style.display='block'}
 function hideCtx(){document.getElementById('ctx').style.display='none'}
-document.addEventListener('click',e=>{if(!e.target.closest('.ctx'))hideCtx()});
-async function renCtx(p){hideCtx();const n=p.split('/').pop(),nn=prompt('Rename:',n);if(nn&&nn!==n){await api.rename(p,nn);await loadDir()}}
+// Use mousedown instead of click — click fires after contextmenu and hides the menu immediately
+document.addEventListener('mousedown',e=>{if(e.button===0&&!e.target.closest('.ctx'))hideCtx()});
+async function renCtx(p){hideCtx();const n=p.split('/').pop(),nn=prompt('Rename:',n);if(nn&&nn!==n){const r=await api.smartRename(p,nn);if(r.ok)await loadDir();else if(r.error)alert('Rename failed: '+r.error)}}
 async function delCtx(p){hideCtx();if(confirm(`Trash "${p.split('/').pop()}"?`)){await api.trash(p);ct().sel=new Set();await loadDir()}}
 async function permDelCtx(p){hideCtx();await api.permanentDelete([p]);ct().sel=new Set();await loadDir()}
 async function showProps(p){hideCtx();const r=await api.stat(p);if(r.ok){const s=r.stats;alert(`Path: ${p}\nSize: ${fmt(s.size)}\nCreated: ${s.created?.split('T')[0]||'N/A'}\nModified: ${s.modified?.split('T')[0]||'N/A'}\nPermissions: ${s.permissions}`)}}
 async function addFavP(p){if(!bm.favourites.includes(p)){bm.favourites.push(p);await api.saveCfg('bookmarks',bm);renderSB()}hideCtx()}
 async function addBmP(p){if(!bm.bookmarks.includes(p)){bm.bookmarks.push(p);await api.saveCfg('bookmarks',bm);renderSB()}hideCtx()}
+async function showOpenWith(p){
+  hideCtx();const apps=await api.getAppsForFile(p);
+  if(!apps.length){alert('No applications found for this file type');return}
+  const m=document.getElementById('ctx');let h='<div style="padding:6px 16px;font-size:11px;color:var(--t3);font-weight:600">OPEN WITH</div>';
+  for(const app of apps){h+=`<button class="ci" onclick="api.openWith('${esc(p)}','${esc(app.desktop)}');hideCtx()">${app.isDefault?'⭐ ':''} ${app.name}</button>`}
+  h+='<div class="csp"></div><button class="ci" onclick="api.openFile(\''+esc(p)+'\');hideCtx()">🚀 System Default</button>';
+  m.innerHTML=h;m.style.display='block'}
 
 // ═══ KEYBOARD ═══
 document.addEventListener('keydown',e=>{
