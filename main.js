@@ -4,6 +4,9 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const { exec, spawn, execSync } = require('child_process');
+let sharp;
+try { sharp = require('sharp'); sharp.cache({ memory: 100, files: 20 }); sharp.concurrency(2); } // Limit sharp to 2 threads and 100MB cache
+catch { console.error('sharp not found, falling back to nativeImage'); }
 
 const HOME = os.homedir();
 const CACHE = path.join(HOME, '.cache', 'winex-thumbs');
@@ -123,113 +126,146 @@ ipcMain.handle('fs:scanImages', async (_, dirPath, maxDepth) => {
   await walk(dirPath, 0); return images;
 });
 
-// ══════════════ THUMBNAILS — RESOURCE-AWARE ENGINE ══════════════
+// ══════════════ THUMBNAILS v2 — SHARP-BASED, NON-BLOCKING ══════════════
+// sharp uses libvips: processes in worker threads, constant memory (~50MB),
+// never loads full image into RAM. 10-50x faster than nativeImage.
 const thumbMemCache = new Map();
 const DEBUG_LOG = path.join(HOME, '.cache', 'winex-debug.log');
 const PERF_LOG = path.join(HOME, '.cache', 'winex-performance.log');
-let debugLogStream = null;
-let perfLogStream = null;
+let debugLogStream = null, perfLogStream = null;
 
 function dbg(obj) {
-  if (!debugLogStream) {
-    try { debugLogStream = fs.createWriteStream(DEBUG_LOG, { flags: 'a' }); } catch { return; }
-    debugLogStream.write(JSON.stringify({ event: 'app_start', version: 'v1.3-resource-aware', ts: Date.now() }) + '\n');
-  }
+  if (!debugLogStream) { try { debugLogStream = fs.createWriteStream(DEBUG_LOG, { flags: 'a' }); } catch { return; } debugLogStream.write(JSON.stringify({ event: 'app_start', version: 'v1.4-sharp', ts: Date.now() }) + '\n'); }
   debugLogStream.write(JSON.stringify({ ...obj, ts: Date.now() }) + '\n');
 }
 function perfLog(obj) {
-  if (!perfLogStream) {
-    try { perfLogStream = fs.createWriteStream(PERF_LOG, { flags: 'a' }); } catch { return; }
-  }
+  if (!perfLogStream) { try { perfLogStream = fs.createWriteStream(PERF_LOG, { flags: 'a' }); } catch { return; } }
   perfLogStream.write(JSON.stringify({ ...obj, ts: Date.now() }) + '\n');
 }
 
 function normPath(p) { return path.resolve(p); }
 function hashPath(p) { return crypto.createHash('sha256').update(p).digest('hex'); }
 
-const CACHE_VERSION_FILE = path.join(CACHE, '.cache_version');
-try { if (fs.readFileSync(CACHE_VERSION_FILE, 'utf8').trim() !== '3') throw 0; }
-catch { try { for (const f of fs.readdirSync(CACHE)) { if (f.endsWith('.jpg')) fs.unlinkSync(path.join(CACHE, f)); } } catch {} fs.writeFileSync(CACHE_VERSION_FILE, '3'); }
+// Cache version
+const CVF = path.join(CACHE, '.cache_version');
+try { if (fs.readFileSync(CVF, 'utf8').trim() !== '4') throw 0; }
+catch { try { for (const f of fs.readdirSync(CACHE)) { if (f.endsWith('.jpg')) fs.unlinkSync(path.join(CACHE, f)); } } catch {} fs.writeFileSync(CVF, '4'); }
 
-const RL = { maxRssMB: 900, maxLoadPct: 75, maxPerSec: 8, minDelayMs: 125, concurrency: 1, maxQueue: 100 };
-let lastThumbTime = 0, thumbsThisSec = 0, lastSecReset = 0, thumbPaused = false, activeJobs = 0;
-const thumbQueue = [];
-
+// Resource monitor
 function getResUsage() {
   const m = process.memoryUsage();
-  return { rssMB: Math.round(m.rss/1048576), heapMB: Math.round(m.heapUsed/1048576), loadPct: Math.round(os.loadavg()[0]/os.cpus().length*100), freeMB: Math.round(os.freemem()/1048576), totalMB: Math.round(os.totalmem()/1048576), qLen: thumbQueue.length };
+  return { rssMB: Math.round(m.rss / 1048576), heapMB: Math.round(m.heapUsed / 1048576), loadPct: Math.round(os.loadavg()[0] / os.cpus().length * 100), freeMB: Math.round(os.freemem() / 1048576), totalMB: Math.round(os.totalmem() / 1048576) };
 }
 
-function shouldPause() {
-  const r = getResUsage();
-  const now = Date.now();
-  if (Math.floor(now/1000) !== lastSecReset) { thumbsThisSec = 0; lastSecReset = Math.floor(now/1000); }
-  const bad = r.rssMB > RL.maxRssMB || r.loadPct > RL.maxLoadPct || r.freeMB < 500 || thumbsThisSec >= RL.maxPerSec;
-  if (bad && !thumbPaused) { thumbPaused = true; perfLog({ event: 'thumb_paused', ...r }); }
-  if (!bad && thumbPaused) { thumbPaused = false; perfLog({ event: 'thumb_resumed', ...r }); }
-  return bad;
-}
+// ═══ BATCH THUMBNAIL GENERATOR ═══
+// Instead of 13,000 individual IPC calls, the renderer sends a batch of
+// visible paths (max 30). This runs them sequentially with sharp.
+let batchAbortId = 0;
 
-async function runQueue() {
-  if (activeJobs >= RL.concurrency || !thumbQueue.length) return;
-  if (shouldPause()) { setTimeout(runQueue, 500); return; }
-  const elapsed = Date.now() - lastThumbTime;
-  if (elapsed < RL.minDelayMs) { setTimeout(runQueue, RL.minDelayMs - elapsed); return; }
-  const job = thumbQueue.shift();
-  activeJobs++; lastThumbTime = Date.now(); thumbsThisSec++;
-  try { await job(); } catch {}
-  activeJobs--;
-  if (thumbsThisSec === 1) perfLog({ event: 'res_check', ...getResUsage() });
-  if (thumbQueue.length) setTimeout(runQueue, 10);
-}
-
-ipcMain.handle('fs:getThumb', (_, filePath) => {
-  const fp = normPath(filePath);
-  if (thumbMemCache.has(fp)) return thumbMemCache.get(fp);
-  if (thumbQueue.length >= RL.maxQueue) return null;
-  return new Promise(resolve => {
-    thumbQueue.push(async () => {
-      try {
-        const h = hashPath(fp), cp = path.join(CACHE, h + '.jpg');
-        try { await fs.promises.access(cp); const u = 'localthumb://' + cp; thumbMemCache.set(fp, u); resolve(u); return; } catch {}
-        const r = getResUsage();
-        if (r.rssMB > RL.maxRssMB + 200 || r.freeMB < 200) { resolve(null); return; }
+ipcMain.handle('fs:generateThumbBatch', async (_, paths, batchId) => {
+  const results = {};
+  for (const rawPath of paths) {
+    // Check if this batch was cancelled (user navigated away)
+    if (batchAbortId !== batchId) {
+      perfLog({ event: 'batch_aborted', batchId, processed: Object.keys(results).length });
+      return results; // Return what we have so far
+    }
+    const fp = normPath(rawPath);
+    // Already cached?
+    if (thumbMemCache.has(fp)) { results[rawPath] = thumbMemCache.get(fp); continue; }
+    const hash = hashPath(fp);
+    const cp = path.join(CACHE, hash + '.jpg');
+    // On disk?
+    try { await fs.promises.access(cp); const url = 'localthumb://' + cp; thumbMemCache.set(fp, url); results[rawPath] = url; continue; } catch {}
+    // Check resources
+    const res = getResUsage();
+    if (res.freeMB < 300 || res.rssMB > 1000) {
+      perfLog({ event: 'batch_paused_resources', ...res });
+      await new Promise(r => setTimeout(r, 1000)); // Wait 1 second for resources to free
+      const res2 = getResUsage();
+      if (res2.freeMB < 200) { results[rawPath] = null; continue; } // Still low, skip this one
+    }
+    // Generate with sharp (non-blocking, constant memory)
+    try {
+      if (sharp) {
+        await sharp(fp, { failOnError: false, limitInputPixels: 100000000 }) // 100MP limit
+          .resize(200, 200, { fit: 'cover', withoutEnlargement: true })
+          .jpeg({ quality: 70, mozjpeg: true })
+          .toFile(cp);
+      } else {
+        // Fallback to nativeImage if sharp not available
         const img = nativeImage.createFromPath(fp);
-        if (img.isEmpty()) { thumbMemCache.set(fp, null); resolve(null); return; }
+        if (img.isEmpty()) { thumbMemCache.set(fp, null); results[rawPath] = null; continue; }
         const resized = img.resize({ width: 200, quality: 'good' });
-        await fs.promises.writeFile(cp, resized.toJPEG(75));
-        const u = 'localthumb://' + cp;
-        thumbMemCache.set(fp, u); dbg({ event: 'thumb_generated', path: fp, hash: h }); resolve(u);
-      } catch { thumbMemCache.set(fp, null); resolve(null); }
-    });
-    runQueue();
-  });
+        await fs.promises.writeFile(cp, resized.toJPEG(70));
+      }
+      const url = 'localthumb://' + cp;
+      thumbMemCache.set(fp, url);
+      results[rawPath] = url;
+    } catch (e) {
+      thumbMemCache.set(fp, null);
+      results[rawPath] = null;
+      dbg({ event: 'thumb_error', path: fp, error: e.message });
+    }
+  }
+  return results;
 });
 
-ipcMain.handle('fs:getVideoThumb', (_, vp) => {
+// Cancel current batch (called when user navigates to different folder)
+ipcMain.handle('fs:cancelThumbBatch', () => {
+  batchAbortId++;
+  return batchAbortId;
+});
+
+// Get new batch ID (renderer calls this before each batch request)
+ipcMain.handle('fs:newBatchId', () => {
+  batchAbortId++;
+  return batchAbortId;
+});
+
+// Single thumb (for filmstrip etc)
+ipcMain.handle('fs:getThumb', async (_, filePath) => {
+  const fp = normPath(filePath);
+  if (thumbMemCache.has(fp)) return thumbMemCache.get(fp);
+  const hash = hashPath(fp);
+  const cp = path.join(CACHE, hash + '.jpg');
+  try { await fs.promises.access(cp); const url = 'localthumb://' + cp; thumbMemCache.set(fp, url); return url; } catch {}
+  try {
+    if (sharp) {
+      await sharp(fp, { failOnError: false, limitInputPixels: 100000000 })
+        .resize(200, 200, { fit: 'cover', withoutEnlargement: true })
+        .jpeg({ quality: 70, mozjpeg: true })
+        .toFile(cp);
+    } else {
+      const img = nativeImage.createFromPath(fp);
+      if (img.isEmpty()) { thumbMemCache.set(fp, null); return null; }
+      await fs.promises.writeFile(cp, img.resize({ width: 200 }).toJPEG(70));
+    }
+    const url = 'localthumb://' + cp;
+    thumbMemCache.set(fp, url);
+    return url;
+  } catch { thumbMemCache.set(fp, null); return null; }
+});
+
+ipcMain.handle('fs:getVideoThumb', async (_, vp) => {
   const fp = normPath(vp);
-  if (thumbMemCache.has(fp)) return Promise.resolve(thumbMemCache.get(fp));
-  if (thumbQueue.length >= RL.maxQueue) return Promise.resolve(null);
-  const h = hashPath(fp), cp = path.join(CACHE, 'v_' + h + '.jpg');
+  if (thumbMemCache.has(fp)) return thumbMemCache.get(fp);
+  const hash = hashPath(fp);
+  const cp = path.join(CACHE, 'v_' + hash + '.jpg');
+  try { await fs.promises.access(cp); const url = 'localthumb://' + cp; thumbMemCache.set(fp, url); return url; } catch {}
+  try { execSync('which ffmpeg', { stdio: 'ignore' }); } catch { return null; }
   return new Promise(resolve => {
-    thumbQueue.push(async () => {
-      try { await fs.promises.access(cp); const u='localthumb://'+cp; thumbMemCache.set(fp,u); resolve(u); return; } catch {}
-      try { execSync('which ffmpeg',{stdio:'ignore'}); } catch { resolve(null); return; }
-      await new Promise(res2 => {
-        const p=spawn('ffmpeg',['-i',fp,'-ss','2','-vframes','1','-vf','scale=200:-1','-q:v','8','-y',cp],{stdio:'ignore',timeout:6000});
-        p.on('close',code=>{const u=code===0?'localthumb://'+cp:null;thumbMemCache.set(fp,u);resolve(u);res2()});
-        p.on('error',()=>{resolve(null);res2()});
-        setTimeout(()=>{try{p.kill()}catch{};res2()},6000);
-      });
-    });
-    runQueue();
+    const p = spawn('ffmpeg', ['-i', fp, '-ss', '2', '-vframes', '1', '-vf', 'scale=200:-1', '-q:v', '8', '-y', cp], { stdio: 'ignore', timeout: 6000 });
+    p.on('close', code => { const url = code === 0 ? 'localthumb://' + cp : null; thumbMemCache.set(fp, url); resolve(url); });
+    p.on('error', () => resolve(null));
+    setTimeout(() => { try { p.kill(); } catch {} }, 6000);
   });
 });
 
 ipcMain.handle('fs:imageUrl', (_, p) => 'localthumb://' + normPath(p));
-ipcMain.handle('fs:getCachedThumbs', async (_, paths) => { const r = {}; for (const p of paths) { const np = normPath(p); if (thumbMemCache.has(np)) r[p] = thumbMemCache.get(np); } return r; });
+ipcMain.handle('fs:getCachedThumbs', (_, paths) => { const r = {}; for (const p of paths) { const np = normPath(p); if (thumbMemCache.has(np)) r[p] = thumbMemCache.get(np); } return r; });
 ipcMain.handle('fs:getResourceUsage', () => getResUsage());
-ipcMain.handle('fs:clearThumbQueue', () => { const c = thumbQueue.length; thumbQueue.length = 0; perfLog({ event: 'queue_cleared', cleared: c }); return { cleared: c }; });
+ipcMain.handle('fs:clearThumbQueue', () => { batchAbortId++; return { cleared: 0 }; });
 
 // ══════════════ STANDARD FS OPS ══════════════
 ipcMain.handle('fs:homedir', () => HOME);

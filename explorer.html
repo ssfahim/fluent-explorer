@@ -217,6 +217,7 @@ async function loadDir(){
   const t=ct(),el=document.getElementById('content');
   el.innerHTML='<div class="loading">Loading...</div>';
   thumbAbort++;
+  await api.cancelThumbBatch(); // Kill any running batch immediately
 
   // First try: get count to check if huge folder
   const r=await api.readdirPaged(t.path, 0, 500);
@@ -353,59 +354,69 @@ function requestThumb(fpath, imgEl){
 }
 
 async function loadVisibleThumbs(){
-  const myAbort=++thumbAbort;
+  // Cancel any previous batch
+  const batchId = await api.newBatchId();
   const contentEl=document.getElementById('content');
 
-  // First: batch check main process cache for any we don't have locally
-  const uncachedPaths=[];
+  // Step 1: Apply cached thumbs immediately (zero IPC)
   for(const[fpath,el]of imgElementMap){
-    if(!thumbCache[fpath])uncachedPaths.push(fpath);
-    else{el.src=thumbCache[fpath];el.dataset.reqid='cached';}
+    if(thumbCache[fpath]){el.src=thumbCache[fpath]; continue;}
   }
+
+  // Step 2: Batch check main process cache
+  const uncachedPaths=[];
+  for(const[fpath]of imgElementMap){ if(!thumbCache[fpath]) uncachedPaths.push(fpath); }
 
   if(uncachedPaths.length){
     const mainCached=await api.getCachedThumbs(uncachedPaths);
     for(const[p,url]of Object.entries(mainCached)){
+      if(url){ thumbCache[p]=url; const el=imgElementMap.get(p); if(el)el.src=url; }
+    }
+  }
+
+  // Step 3: Find ONLY visible + nearby items that still need thumbs (max 30)
+  const cRect=contentEl.getBoundingClientRect();
+  const vMid=contentEl.scrollTop+contentEl.clientHeight/2;
+  const needLoad=[];
+  for(const[fpath,el]of imgElementMap){
+    if(thumbCache[fpath])continue;
+    const r=el.getBoundingClientRect();
+    const elTop=r.top-cRect.top+contentEl.scrollTop;
+    const isVis=r.top>=cRect.top-200&&r.bottom<=cRect.bottom+200; // visible + 200px buffer
+    needLoad.push({fpath,el,dist:isVis?0:Math.abs(elTop-vMid)});
+  }
+  needLoad.sort((a,b)=>a.dist-b.dist);
+  const batch=needLoad.slice(0, 30); // MAX 30 at a time — never more
+
+  if(!batch.length)return;
+
+  // Step 4: Send ONE batch IPC call (not 13,000 individual calls)
+  const pathsToGenerate=batch.map(b=>b.fpath);
+  const results=await api.generateThumbBatch(pathsToGenerate, batchId);
+
+  // Step 5: Apply results using direct element references (no CSS selector)
+  if(results){
+    for(const[p,url]of Object.entries(results)){
       if(url){
         thumbCache[p]=url;
         const el=imgElementMap.get(p);
-        if(el){el.src=url;el.dataset.reqid='cached';}
+        if(el)el.src=url;
       }
     }
   }
 
-  if(thumbAbort!==myAbort)return;
-
-  // Now load remaining uncached, prioritized by viewport
-  const cRect=contentEl.getBoundingClientRect();
-  const vMid=contentEl.scrollTop+contentEl.clientHeight/2;
-  const toLoad=[];
-  for(const[fpath,el]of imgElementMap){
-    if(thumbCache[fpath])continue; // already done
-    const r=el.getBoundingClientRect();
-    const elTop=r.top-cRect.top+contentEl.scrollTop;
-    const isVis=r.top>=cRect.top&&r.bottom<=cRect.bottom;
-    toLoad.push({fpath,el,dist:isVis?0:Math.abs(elTop-vMid)});
-  }
-  toLoad.sort((a,b)=>a.dist-b.dist);
-
-  // Fire requests — each has its own reqid, so stale responses self-discard
-  for(const item of toLoad){
-    if(thumbAbort!==myAbort)return;
-    requestThumb(item.fpath,item.el);
-    // Small yield to avoid blocking UI — process 5 at a time then yield
-    if(toLoad.indexOf(item)%5===4) await new Promise(r=>setTimeout(r,0));
+  // Step 6: If there are more uncached items, schedule next batch after a pause
+  const remaining=needLoad.length-batch.length;
+  if(remaining>0){
+    setTimeout(loadVisibleThumbs, 300); // Load next 30 after 300ms breathing room
   }
 }
 
-// On scroll: re-prioritize remaining uncached thumbs
+// On scroll: load visible thumbnails with debounce
 let scrollTmr=null;
 document.getElementById('content').addEventListener('scroll',()=>{
   clearTimeout(scrollTmr);
-  scrollTmr=setTimeout(()=>{
-    // Only re-request thumbs that haven't loaded yet
-    loadVisibleThumbs();
-  },200);
+  scrollTmr=setTimeout(loadVisibleThumbs, 250);
 });
 
 // ═══ SELECTION — toggle CSS class, NO re-render ═══
