@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net, nativeImage, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -25,8 +25,47 @@ let globalClipboard = { paths: [], action: '' };
 // Stored sorted image list for Photos to pick up (eliminates race condition)
 let pendingPhotosData = null; // { sortedPaths:[], startImage:'' }
 
-ipcMain.handle('clip:set', (_, d) => { globalClipboard = d; });
-ipcMain.handle('clip:get', () => globalClipboard);
+ipcMain.handle('clip:set', (_, d) => {
+  globalClipboard = d;
+  // Write to system clipboard so Nautilus/Nemo can paste our files
+  if (d.paths && d.paths.length) {
+    try {
+      const action = d.action === 'cut' ? 'cut' : 'copy';
+      const uris = d.paths.map(p => 'file://' + encodeURI(p)).join('\n');
+      clipboard.writeBuffer('x-special/gnome-copied-files', Buffer.from(action + '\n' + uris, 'utf8'));
+      clipboard.writeText(uris);
+    } catch {}
+  }
+});
+ipcMain.handle('clip:get', () => {
+  // Check our internal clipboard first
+  if (globalClipboard.paths && globalClipboard.paths.length) return globalClipboard;
+  // Fallback: read system clipboard (files copied from Nautilus/Nemo/Thunar)
+  try {
+    // Try gnome-copied-files MIME format
+    const buf = clipboard.readBuffer('x-special/gnome-copied-files');
+    if (buf && buf.length > 2) {
+      const content = buf.toString('utf8');
+      const lines = content.split('\n').filter(Boolean);
+      let action = 'copy';
+      const paths = [];
+      for (const line of lines) {
+        if (line === 'copy' || line === 'cut') { action = line; continue; }
+        if (line.startsWith('file://')) paths.push(decodeURIComponent(new URL(line).pathname));
+      }
+      if (paths.length) return { paths, action };
+    }
+  } catch {}
+  try {
+    // Fallback: plain text URIs
+    const text = clipboard.readText();
+    if (text && text.includes('file:///')) {
+      const paths = text.split('\n').filter(l => l.startsWith('file://')).map(l => decodeURIComponent(new URL(l).pathname));
+      if (paths.length) return { paths, action: 'copy' };
+    }
+  } catch {}
+  return globalClipboard;
+});
 
 // Photos requests the sorted list — no race condition
 ipcMain.handle('photos:getSortedList', () => {
@@ -185,15 +224,34 @@ ipcMain.handle('fs:generateThumbBatch', async (_, paths, batchId) => {
       const res2 = getResUsage();
       if (res2.freeMB < 200) { results[rawPath] = null; continue; } // Still low, skip this one
     }
-    // Generate with sharp (non-blocking, constant memory)
+    // Generate thumbnail
     try {
-      if (sharp) {
-        await sharp(fp, { failOnError: false, limitInputPixels: 100000000 }) // 100MP limit
+      const ext = path.extname(fp).toLowerCase().slice(1);
+      const isVideo = VID_EXT.has(ext);
+
+      if (isVideo) {
+        // Video files: use ffmpeg to extract a frame
+        let ffmpegOk = false;
+        try { execSync('which ffmpeg', { stdio: 'ignore' }); ffmpegOk = true; } catch {}
+        if (ffmpegOk) {
+          await new Promise((resolve) => {
+            const proc = spawn('ffmpeg', ['-i', fp, '-ss', '2', '-vframes', '1', '-vf', 'scale=200:-1', '-q:v', '8', '-y', cp], { stdio: 'ignore', timeout: 8000 });
+            proc.on('close', code => resolve(code));
+            proc.on('error', () => resolve(1));
+            setTimeout(() => { try { proc.kill(); } catch {} resolve(1); }, 8000);
+          });
+          try { await fs.promises.access(cp); } catch { thumbMemCache.set(fp, null); results[rawPath] = null; continue; }
+        } else {
+          thumbMemCache.set(fp, null); results[rawPath] = null; continue;
+        }
+      } else if (sharp) {
+        // Image files: use sharp (fast, non-blocking)
+        await sharp(fp, { failOnError: false, limitInputPixels: 100000000 })
           .resize(200, 200, { fit: 'cover', withoutEnlargement: true })
           .jpeg({ quality: 70, mozjpeg: true })
           .toFile(cp);
       } else {
-        // Fallback to nativeImage if sharp not available
+        // Fallback: nativeImage
         const img = nativeImage.createFromPath(fp);
         if (img.isEmpty()) { thumbMemCache.set(fp, null); results[rawPath] = null; continue; }
         const resized = img.resize({ width: 200, quality: 'good' });
@@ -359,7 +417,33 @@ ipcMain.handle('fs:openTerminal', (_,dir) => {
 
 // Config
 function cfgFile(n){return path.join(CFG,'winex-'+n+'.json')}
-ipcMain.handle('cfg:load', async (_,n,def) => { try{return JSON.parse(await fs.promises.readFile(cfgFile(n),'utf8'))}catch{return def} });
+
+// Legacy config file names from older versions
+const LEGACY_CONFIG_NAMES = {
+  'bookmarks': ['win-explorer-bookmarks.json', 'winex-bookmarks.json'],
+  'settings': ['win-explorer-settings.json', 'winex-settings.json'],
+  'sortprefs': ['win-explorer-sortprefs.json', 'winex-sortprefs.json'],
+  'networks': ['win-explorer-networks.json', 'winex-networks.json'],
+  'session': ['win-explorer-session.json', 'winex-session.json'],
+};
+
+ipcMain.handle('cfg:load', async (_,n,def) => {
+  // Try current filename first
+  try { return JSON.parse(await fs.promises.readFile(cfgFile(n),'utf8')); } catch {}
+  // Try legacy filenames
+  const legacyNames = LEGACY_CONFIG_NAMES[n] || [];
+  for (const legacyName of legacyNames) {
+    const legacyPath = path.join(CFG, legacyName);
+    try {
+      const data = JSON.parse(await fs.promises.readFile(legacyPath, 'utf8'));
+      // Found legacy data — migrate it to current filename
+      await fs.promises.writeFile(cfgFile(n), JSON.stringify(data, null, 2));
+      dbg({ event: 'config_migrated', from: legacyName, to: 'winex-'+n+'.json' });
+      return data;
+    } catch {}
+  }
+  return def;
+});
 ipcMain.handle('cfg:save', async (_,n,d) => { try{await fs.promises.writeFile(cfgFile(n),JSON.stringify(d,null,2));return{ok:1}}catch{return{ok:0}} });
 
 // ══════════════ SESSION SAVE/RESTORE ══════════════
@@ -671,8 +755,35 @@ ipcMain.handle('fs:readdirPaged', async (_, dirPath, offset, limit) => {
 const MEMORY_FILE = path.join(CFG, 'fluent-explorer-memory.json');
 
 ipcMain.handle('memory:load', async () => {
-  try { return JSON.parse(await fs.promises.readFile(MEMORY_FILE, 'utf8')); }
-  catch { return { version: 1, favourites: [], bookmarks: [], pinnedFolders: [], cachedFolders: [], recentPaths: [] }; }
+  let memory = { version: 1, favourites: [], bookmarks: [], pinnedFolders: [], cachedFolders: [], recentPaths: [] };
+  try { memory = JSON.parse(await fs.promises.readFile(MEMORY_FILE, 'utf8')); } catch {}
+  if (!memory.favourites) memory.favourites = [];
+  if (!memory.bookmarks) memory.bookmarks = [];
+
+  // If memory is empty, try to recover from ALL legacy bookmark files
+  if (!memory.favourites.length && !memory.bookmarks.length) {
+    const legacyFiles = [
+      'winex-bookmarks.json',
+      'win-explorer-bookmarks.json',
+    ];
+    for (const fname of legacyFiles) {
+      try {
+        const data = JSON.parse(await fs.promises.readFile(path.join(CFG, fname), 'utf8'));
+        if (data.favourites && data.favourites.length) {
+          memory.favourites = [...new Set([...memory.favourites, ...data.favourites])];
+        }
+        if (data.bookmarks && data.bookmarks.length) {
+          memory.bookmarks = [...new Set([...memory.bookmarks, ...data.bookmarks])];
+        }
+      } catch {}
+    }
+    // Save recovered data
+    if (memory.favourites.length || memory.bookmarks.length) {
+      try { await fs.promises.writeFile(MEMORY_FILE, JSON.stringify(memory, null, 2)); } catch {}
+      dbg({ event: 'bookmarks_recovered', favourites: memory.favourites.length, bookmarks: memory.bookmarks.length });
+    }
+  }
+  return memory;
 });
 
 ipcMain.handle('memory:save', async (_, data) => {
