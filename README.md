@@ -23,14 +23,13 @@ Both apps appear as separate windows in your taskbar. Closing Photos does not cl
 
 ---
 
-## What's new in v1.9.0
+## What's new in v1.9.0 / v1.9.1
 
-- **True fullscreen in the image viewer.** The **⛶ button** (and **F11**) now makes the *window*
-  fullscreen like a browser's F11 — the titlebar and the top/bottom panels disappear and only the
-  image fills the screen. **Esc** (or the button / F11 again) exits and brings everything back. It
-  stays in sync however you trigger it (button, F11, or the window manager), and the Explorer window
-  supports F11 too. *(Double-clicking the image still does the lighter in-window "hide the panels"
-  immersive mode.)*
+- **True fullscreen in the image viewer.** **Double-click the image**, the **⛶ button**, or **F11**
+  now makes the *window* fullscreen like a browser's F11 — the titlebar and the top/bottom panels
+  disappear and only the image fills the screen. **Esc** (or double-click / button / F11 again)
+  exits and brings everything back. It stays in sync however you trigger it (double-click, button,
+  F11, or the window manager), and the Explorer window supports F11 too.
 - **Delete in the viewer.** Press **Delete** to send the current photo to Trash (recoverable) and
   automatically move to the next one — like Windows Photos.
 

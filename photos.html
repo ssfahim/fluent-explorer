@@ -238,11 +238,11 @@ function buildDOM(){
       <div style="display:flex;gap:4px">
         <button class="vb" id="infoBtn" onclick="infoOn=!infoOn;updUI()">ℹ️</button>
         <button class="vb" id="filmBtn" title="Toggle filmstrip (F)" onclick="toggleFilm()">▦</button>
-        <button class="vb" id="immBtn" title="Fullscreen (F11) — double-click image to just hide the panels" onclick="toggleFullScreen()">⛶</button>
+        <button class="vb" id="immBtn" title="Fullscreen (F11 / double-click image)" onclick="toggleFullScreen()">⛶</button>
         <button class="vb" title="Back to gallery (Esc)" onclick="toGallery()">✕</button>
       </div>
     </div>
-    <div class="vmain" id="vmain" ondblclick="toggleChrome()">
+    <div class="vmain" id="vmain" ondblclick="toggleFullScreen()">
       <div class="vbg" id="vbg"></div>
       ${images.length>1?'<button class="arr l" title="Previous (←)" onclick="event.stopPropagation();goPrev()">‹</button>':''}
       ${images.length>1?'<button class="arr r" id="arrR" title="Next (→)" onclick="event.stopPropagation();goNext()">›</button>':''}

@@ -11,8 +11,8 @@
       fullscreen with the window-manager's own F11 too — the panels should still hide/show correctly.
 - [ ] **Delete** in the viewer sends the current photo to Trash and shows the next one (check it
       lands in your Trash / is recoverable).
-- [ ] Reminder: **double-clicking the image** still does the in-window immersive (panels fade, window
-      stays the same size) — that's separate from ⛶ fullscreen.
+- [ ] **Double-clicking the image** now also toggles true fullscreen (same as ⛶ / F11); double-click
+      again or Esc exits.
 - [ ] **F11** in the Explorer window also toggles fullscreen (hides its titlebar); Esc exits.
 
 ## v1.8.0 — Explorer modernization
