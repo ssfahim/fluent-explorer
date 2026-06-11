@@ -39,6 +39,8 @@ button{border:none;cursor:pointer;background:transparent;color:#e0e0e0;font-fami
 .viewer.chrome-hidden .vtop,.viewer.chrome-hidden .vbot,.viewer.chrome-hidden .film,.viewer.chrome-hidden .arr{opacity:0;pointer-events:none}
 .vtop,.vbot,.film{transition:opacity .2s}
 .viewer.film-off .film{display:none}
+/* OS FULLSCREEN (F11 / ⛶ button): hide the window's own chrome so only the content shows */
+body.fs .titlebar, body.fs .bar, body.fs .statusbar{display:none}
 .vtop{position:absolute;top:0;left:0;right:0;height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;background:linear-gradient(rgba(0,0,0,.6),transparent);z-index:3}
 .vinfo{font-size:13px;display:flex;align-items:center;gap:10px}.vinfo .fn{font-weight:600}.vinfo .fc{opacity:.5;font-size:12px}
 .vb{width:36px;height:36px;border-radius:6px;font-size:14px;display:flex;align-items:center;justify-content:center;transition:background .1s}.vb:hover{background:rgba(255,255,255,.12)}.vb.act{background:rgba(96,205,255,.2);color:#60cdff}
@@ -206,6 +208,28 @@ function toggleFilm(){ const v=document.getElementById('viewer'); if(v) v.classL
 // Any mouse movement in the viewer reveals the chrome and restarts the idle timer.
 document.addEventListener('mousemove', ()=>{ if(mode==='viewer' && chromeHidden) showChrome(); });
 
+// ═══ TRUE OS FULLSCREEN (F11-style) — window covers the screen, app titlebar + panels hidden ═══
+let isFS=false;
+function toggleFullScreen(){ if(window.api&&api.winToggleFullScreen) api.winToggleFullScreen(); }
+function exitFullScreen(){ if(window.api&&api.winSetFullScreen) api.winSetFullScreen(false); }
+if(window.api&&window.api.onFullScreen) window.api.onFullScreen(on=>{
+  isFS=on; document.body.classList.toggle('fs',on);
+  const b=document.getElementById('immBtn'); if(b) b.classList.toggle('act',on);
+  if(on && mode==='viewer') showChrome(); // viewer controls then auto-hide for a clean view
+});
+
+// Delete the current image (to Trash — recoverable) and advance, like Windows Photos.
+async function deleteCurrent(){
+  const img=images[vi]; if(!img) return;
+  const r=await api.trash(img.path);
+  if(r&&r.ok){
+    images.splice(vi,1); delete preloaded[img.path];
+    if(!images.length){ toGallery(); return; }
+    if(vi>=images.length) vi=images.length-1;
+    display(vi);
+  }
+}
+
 function buildDOM(){
   const v=document.getElementById('viewer');
   v.innerHTML=`
@@ -214,7 +238,7 @@ function buildDOM(){
       <div style="display:flex;gap:4px">
         <button class="vb" id="infoBtn" onclick="infoOn=!infoOn;updUI()">ℹ️</button>
         <button class="vb" id="filmBtn" title="Toggle filmstrip (F)" onclick="toggleFilm()">▦</button>
-        <button class="vb" id="immBtn" title="Immersive — show only the image (double-click image)" onclick="toggleChrome()">⛶</button>
+        <button class="vb" id="immBtn" title="Fullscreen (F11) — double-click image to just hide the panels" onclick="toggleFullScreen()">⛶</button>
         <button class="vb" title="Back to gallery (Esc)" onclick="toGallery()">✕</button>
       </div>
     </div>
@@ -361,17 +385,20 @@ document.addEventListener('drop', async e => {
 
 // ═══ KEYBOARD ═══
 document.addEventListener('keydown', e => {
+  if(e.key==='F11'){ e.preventDefault(); toggleFullScreen(); return; }
+  if(e.key==='Escape' && isFS && mode!=='viewer'){ exitFullScreen(); return; }
   if(mode==='viewer'){
     if(e.key==='ArrowRight'||e.key==='ArrowDown'){ e.preventDefault(); goNext(); }
     else if(e.key==='ArrowLeft'||e.key==='ArrowUp'){ e.preventDefault(); goPrev(); }
-    else if(e.key==='Escape'){ if(chromeHidden) showChrome(); else toGallery(); }
+    else if(e.key==='Escape'){ if(isFS) exitFullScreen(); else if(chromeHidden) showChrome(); else toGallery(); }
     else if(e.key===' '){ e.preventDefault(); goNext(); }
     else if(e.key==='+'||e.key==='='){ zIn(); }
     else if(e.key==='-'||e.key==='_'){ zOut(); }
     else if(e.key==='0'){ zoom=1; apZ(); }
     else if(e.key==='f'||e.key==='F'){ toggleFilm(); }
     else if(e.key==='i'||e.key==='I'){ infoOn=!infoOn; updUI(); }
-    else if(e.key==='F11'){ e.preventDefault(); api.winMax(); }
+    else if(e.key==='Delete'){ e.preventDefault(); deleteCurrent(); }
+    else if(e.key==='F11'){ e.preventDefault(); toggleFullScreen(); }
   }
 });
 // Mouse wheel = zoom in/out (like Windows Photos). Use the arrows/chevrons to change image.

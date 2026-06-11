@@ -183,6 +183,14 @@ function guardReload(win) {
   });
 }
 
+// Keep the renderer's chrome in sync with real OS fullscreen state, however it was triggered
+// (our button, F11 in-app, or the window manager).
+function wireFullScreen(win) {
+  const send = on => { try { win.webContents.send('fx:fullscreen', on); } catch {} };
+  win.on('enter-full-screen', () => send(true));
+  win.on('leave-full-screen', () => send(false));
+}
+
 function createExplorerWindow() {
   explorerWin = new BrowserWindow({
     width: 1280, height: 820, minWidth: 800, minHeight: 500, frame: false,
@@ -191,6 +199,7 @@ function createExplorerWindow() {
   });
   explorerWin.loadFile('explorer.html');
   guardReload(explorerWin);
+  wireFullScreen(explorerWin);
   explorerWin.on('closed', () => { explorerWin = null; });
 }
 
@@ -206,6 +215,7 @@ function createPhotosWindow(folder, imagePath, sortedImagePaths) {
   });
   win.loadFile('photos.html', { query: { folder: folder || '', image: imagePath || '' } });
   guardReload(win);
+  wireFullScreen(win);
   photosWins.add(win);
   win.on('closed', () => { photosWins.delete(win); });
 }
@@ -716,6 +726,11 @@ ipcMain.handle('net:scan', ()=>new Promise(res=>{exec('avahi-browse -t -r _smb._
 ipcMain.handle('win:min', ev => { BrowserWindow.fromWebContents(ev.sender)?.minimize(); });
 ipcMain.handle('win:max', ev => { const w=BrowserWindow.fromWebContents(ev.sender); w?.isMaximized()?w.unmaximize():w?.maximize(); });
 ipcMain.handle('win:close', ev => { BrowserWindow.fromWebContents(ev.sender)?.close(); });
+// True OS-level fullscreen (F11-style). The renderer reacts to the enter/leave-full-screen events
+// (wired in wireFullScreen) to hide/show its chrome — so window-manager-triggered F11 works too.
+ipcMain.handle('win:setFullScreen', (ev, on) => { const w=BrowserWindow.fromWebContents(ev.sender); if(w) w.setFullScreen(!!on); });
+ipcMain.handle('win:toggleFullScreen', ev => { const w=BrowserWindow.fromWebContents(ev.sender); if(w){ const n=!w.isFullScreen(); w.setFullScreen(n); return n; } return false; });
+ipcMain.handle('win:isFullScreen', ev => { const w=BrowserWindow.fromWebContents(ev.sender); return w?w.isFullScreen():false; });
 ipcMain.handle('dialog:pickFolder', async ev => { const w=BrowserWindow.fromWebContents(ev.sender); const r=await dialog.showOpenDialog(w,{properties:['openDirectory']});return r.canceled?null:r.filePaths[0]; });
 ipcMain.on('native-drag', (event, filePath) => { try{const img=nativeImage.createFromPath(filePath);event.sender.startDrag({file:filePath,icon:img.isEmpty()?nativeImage.createEmpty():img.resize({width:64})})}catch{} });
 

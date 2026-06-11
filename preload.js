@@ -51,6 +51,11 @@ contextBridge.exposeInMainWorld('api', {
   winMin: () => ipcRenderer.invoke('win:min'),
   winMax: () => ipcRenderer.invoke('win:max'),
   winClose: () => ipcRenderer.invoke('win:close'),
+  // True OS fullscreen (F11-style)
+  winToggleFullScreen: () => ipcRenderer.invoke('win:toggleFullScreen'),
+  winSetFullScreen: on => ipcRenderer.invoke('win:setFullScreen', on),
+  winIsFullScreen: () => ipcRenderer.invoke('win:isFullScreen'),
+  onFullScreen: cb => ipcRenderer.on('fx:fullscreen', (_, on) => cb(on)),
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
   // Ctrl/Cmd+R is intercepted in main and forwarded here as a folder refresh (no full reload).
   onRefresh: cb => ipcRenderer.on('fx:refresh', () => cb()),

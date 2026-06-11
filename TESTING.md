@@ -4,6 +4,17 @@
 > After `git pull`, run **`./install.sh`** (or launch from the repo with `npm start`) or you'll
 > still be running the old code.
 
+## v1.9.0 — viewer fullscreen + delete
+- [ ] In the image viewer, click **⛶** (or press **F11**): the window goes **true fullscreen** —
+      titlebar + top toolbar + bottom status bar all disappear, only the image shows.
+- [ ] Press **Esc** (or ⛶ / F11 again): exits fullscreen, everything comes back. Try triggering
+      fullscreen with the window-manager's own F11 too — the panels should still hide/show correctly.
+- [ ] **Delete** in the viewer sends the current photo to Trash and shows the next one (check it
+      lands in your Trash / is recoverable).
+- [ ] Reminder: **double-clicking the image** still does the in-window immersive (panels fade, window
+      stays the same size) — that's separate from ⛶ fullscreen.
+- [ ] **F11** in the Explorer window also toggles fullscreen (hides its titlebar); Esc exits.
+
 ## v1.8.0 — Explorer modernization
 - [ ] Click a file, then use **←/→/↑/↓** to move the selection (↑/↓ moves a whole row in grid view);
       **Shift+arrows** extends; **Home/End** jump to first/last; **Enter** opens the focused item.
