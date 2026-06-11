@@ -1,6 +1,6 @@
 {
   "name": "fluent-explorer",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Windows 11 File Manager & Photo Viewer for Linux Mint",
   "main": "main.js",
   "scripts": { "start": "electron .", "photos": "electron . --photos" },

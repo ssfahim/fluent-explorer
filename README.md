@@ -23,6 +23,21 @@ Both apps appear as separate windows in your taskbar. Closing Photos does not cl
 
 ---
 
+## What's new in v1.8.0 — Explorer modernization
+
+> ⚠️ Re-run `./install.sh` after pulling.
+
+Brings Windows-Explorer-grade keyboard & editing behaviour to the file manager:
+- **Arrow-key navigation** — ←/→/↑/↓ move a selection cursor through the grid/list (↑/↓ jump by a
+  full row in grid view), **Shift+arrows** extend the selection, **Home/End** jump to first/last,
+  **Enter** opens the focused item.
+- **Editable address bar** — **Ctrl+L** or **Alt+D** (or click the empty part of the breadcrumb)
+  turns the path into a text box; type or paste a path and press **Enter** to go, **Esc** to cancel.
+- **Inline rename** — **F2** (or context-menu Rename) now edits the name in place with the stem
+  pre-selected; **Enter** commits, **Esc** cancels (no more popup dialog).
+- **More shortcuts** — **Ctrl+F** focuses search, **Ctrl+Shift+N** makes a new folder. Type-ahead
+  (type letters to jump to a file) from v1.7 still applies.
+
 ## What's new in v1.7.0
 
 > ⚠️ Re-run `./install.sh` after pulling (the app runs from `~/.local/share/win-explorer/`).

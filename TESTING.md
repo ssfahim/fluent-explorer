@@ -4,6 +4,15 @@
 > After `git pull`, run **`./install.sh`** (or launch from the repo with `npm start`) or you'll
 > still be running the old code.
 
+## v1.8.0 — Explorer modernization
+- [ ] Click a file, then use **←/→/↑/↓** to move the selection (↑/↓ moves a whole row in grid view);
+      **Shift+arrows** extends; **Home/End** jump to first/last; **Enter** opens the focused item.
+- [ ] **Ctrl+L** or **Alt+D** (or click the blank part of the breadcrumb) → type/paste a path → Enter
+      navigates; Esc cancels.
+- [ ] **F2** on a selected file → edit the name in place (stem pre-selected) → Enter renames, Esc cancels.
+- [ ] **Ctrl+F** focuses the search box; **Ctrl+Shift+N** creates a new folder.
+- [ ] Arrow keys / type-ahead do nothing while you're typing in the search or address box (no interference).
+
 ## v1.7.0
 - [ ] **Thumbnails appear** for your JPEG folders (the sharp "unsupported image format" failure now
       falls back to nativeImage). Check `~/.cache/winex-debug.log` — `sharp_fail_fallback` entries are

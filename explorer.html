@@ -91,6 +91,9 @@ select{font-family:inherit;color:var(--tx);background:var(--ib);border:1px solid
 .modal input[type=text],.modal input[type=password],.modal select{width:100%;height:32px;border:1px solid var(--ibd);border-radius:4px;padding:0 8px;background:var(--ib);color:var(--tx);font-size:13px}
 .modal .mbtns{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 .modal .mbtn{height:32px;padding:0 16px;border-radius:6px;font-size:13px;font-weight:500}.modal .mbtn.p{background:var(--ac);color:#fff}.modal .mbtn.s{background:var(--h2)}
+/* Inline rename input */
+.rename-input{font:inherit;font-size:11px;border:1px solid var(--ac);border-radius:3px;padding:1px 4px;background:var(--ib);color:var(--tx);outline:none;max-width:130px}
+.li .rename-input{max-width:240px}
 /* Rubber band */
 #rubberband{position:fixed;border:1px solid var(--ac);background:rgba(0,120,212,.08);pointer-events:none;z-index:100;display:none}
 </style>
@@ -404,7 +407,21 @@ async function refreshAllPanes(){
 }
 if(window.api&&window.api.onRefresh) window.api.onRefresh(refreshAllPanes);
 
-function renderABar(){const t=ct(),parts=t.path.split('/').filter(Boolean);let ph=`<span class="ps${!parts.length?' c':''}" onclick="nav('/')">/</span>`;let acc='';for(let i=0;i<parts.length;i++){acc+='/'+parts[i];ph+=`<span class="psep">›</span><span class="ps${i===parts.length-1?' c':''}" onclick="nav('${esc(acc)}')">${parts[i]}</span>`}document.getElementById('abar').innerHTML=`<button class="nb" onclick="goBack()" ${t.hi<=0?'disabled':''}>←</button><button class="nb" onclick="goFwd()" ${t.hi>=t.hist.length-1?'disabled':''}>→</button><button class="nb" onclick="goUp()" ${t.path==='/'?'disabled':''}>↑</button><div class="pb">${ph}</div><div class="sbox"><span style="font-size:13px;color:var(--t3)">🔍</span><input value="${t.search||''}" oninput="ct().search=this.value;filterEnt()" placeholder="Search"></div>`}
+function renderABar(){const t=ct(),parts=t.path.split('/').filter(Boolean);let ph=`<span class="ps${!parts.length?' c':''}" onclick="nav('/')">/</span>`;let acc='';for(let i=0;i<parts.length;i++){acc+='/'+parts[i];ph+=`<span class="psep">›</span><span class="ps${i===parts.length-1?' c':''}" onclick="nav('${esc(acc)}')">${parts[i]}</span>`}document.getElementById('abar').innerHTML=`<button class="nb" onclick="goBack()" ${t.hi<=0?'disabled':''}>←</button><button class="nb" onclick="goFwd()" ${t.hi>=t.hist.length-1?'disabled':''}>→</button><button class="nb" onclick="goUp()" ${t.path==='/'?'disabled':''}>↑</button><div class="pb" onclick="if(event.target===this)editAddress()" title="Click to type a path (Ctrl+L)">${ph}</div><div class="sbox"><span style="font-size:13px;color:var(--t3)">🔍</span><input id="searchBox" value="${t.search||''}" oninput="ct().search=this.value;filterEnt()" onkeydown="event.stopPropagation()" placeholder="Search"></div>`}
+
+// Editable address bar (Ctrl+L / Alt+D / click empty area) — type or paste a path, Enter navigates.
+function editAddress(){
+  const pb=document.querySelector('#abar .pb'); if(!pb)return;
+  pb.innerHTML=`<input id="addrInput" style="flex:1;border:none;outline:none;background:transparent;color:var(--tx);font-size:12px" spellcheck="false">`;
+  const inp=document.getElementById('addrInput'); if(!inp)return;
+  inp.value=ct().path; inp.focus(); inp.select();
+  inp.addEventListener('keydown',ev=>{
+    ev.stopPropagation();
+    if(ev.key==='Enter'){ const v=inp.value.trim(); renderABar(); if(v)nav(v); }
+    else if(ev.key==='Escape'){ renderABar(); }
+  });
+  inp.addEventListener('blur',()=>{ setTimeout(()=>{ if(document.getElementById('addrInput'))renderABar(); }, 120); });
+}
 
 function renderSB(){const t=ct(),sb=document.getElementById('sidebar');const quick=[{n:'Home',i:'🏠',p:qp.home},{n:'Desktop',i:'🖥️',p:qp.desktop},{n:'Documents',i:'📄',p:qp.documents},{n:'Downloads',i:'⬇️',p:qp.downloads},{n:'Music',i:'🎵',p:qp.music},{n:'Pictures',i:'🖼️',p:qp.pictures},{n:'Videos',i:'🎬',p:qp.videos},{n:'Trash',i:'🗑️',p:qp.trash}];let h='<div class="st">Quick Access</div>';for(const q of quick)h+=`<div class="si${t.path===q.p?' a':''}" onclick="nav('${esc(q.p)}')"><span class="ico">${q.i}</span>${q.n}</div>`;h+='<div class="st">Favourites <button onclick="addFav()">+</button></div>';for(let i=0;i<bm.favourites.length;i++){const f=bm.favourites[i],n=f.split('/').filter(Boolean).pop()||'/';h+=`<div class="si${t.path===f?' a':''}" onclick="nav('${esc(f)}')"><span class="ico">⭐</span>${n}<span class="rm" onclick="event.stopPropagation();rmFav(${i})">✕</span></div>`}h+='<div class="st">Bookmarks <button onclick="addBm()">+</button></div>';for(let i=0;i<bm.bookmarks.length;i++){const b2=bm.bookmarks[i],n=b2.split('/').filter(Boolean).pop()||'/';h+=`<div class="si${t.path===b2?' a':''}" onclick="nav('${esc(b2)}')"><span class="ico">🔖</span>${n}<span class="rm" onclick="event.stopPropagation();rmBmk(${i})">✕</span></div>`}h+='<div class="st">Network <button onclick="showNetDlg()">+</button></div>';for(let i=0;i<netLoc.locations.length;i++){const nl=netLoc.locations[i];h+=`<div class="si" onclick="mountNet(${i})"><span class="ico">🌐</span>${nl.name||nl.host}<span class="rm" onclick="event.stopPropagation();rmNet(${i})">✕</span></div>`}h+='<div class="st" style="margin-top:8px">System</div>';h+=`<div class="si" onclick="nav('/')"><span class="ico">💻</span>Root (/)</div>`;sb.innerHTML=h}
 
@@ -538,11 +555,38 @@ async function flushThumbs(pane){
 // ═══ SELECTION — toggle CSS class, NO re-render (operates on the focused pane) ═══
 function sel(ev,name){
   const pane=focusedPane(),t=tabOfPane(pane);if(!t)return;
-  if(ev.ctrlKey){t.sel.has(name)?t.sel.delete(name):t.sel.add(name)}
-  else if(ev.shiftKey){const names=t.filtered.map(e=>e.name),last=[...t.sel].pop();if(last){const a=names.indexOf(last),b=names.indexOf(name),[lo,hi]=a<b?[a,b]:[b,a];for(let i=lo;i<=hi;i++)t.sel.add(names[i])}else t.sel.add(name)}
-  else t.sel=new Set([name]);
+  const idx=t.filtered.findIndex(e=>e.name===name);
+  if(ev.ctrlKey){t.sel.has(name)?t.sel.delete(name):t.sel.add(name); t.cursor=idx; t.anchor=idx;}
+  else if(ev.shiftKey){const names=t.filtered.map(e=>e.name),last=[...t.sel].pop();if(last){const a=names.indexOf(last),b=names.indexOf(name),[lo,hi]=a<b?[a,b]:[b,a];for(let i=lo;i<=hi;i++)t.sel.add(names[i])}else t.sel.add(name); t.cursor=idx;}
+  else { t.sel=new Set([name]); t.cursor=idx; t.anchor=idx; }
   syncSelectionCSS(pane);
 }
+
+// Arrow-key navigation (Windows Explorer): move a selection cursor through the grid/list.
+function gridCols(pane){
+  const items=pane.el.querySelectorAll('.gi'); if(items.length<2)return 1;
+  const top=items[0].offsetTop; let c=0;
+  for(const it of items){ if(it.offsetTop===top)c++; else break; }
+  return Math.max(1,c);
+}
+function moveCursor(dir,extend){
+  const pane=focusedPane(),t=tabOfPane(pane); if(!t||!t.filtered.length)return;
+  let cur=(t.cursor!=null&&t.cursor<t.filtered.length)?t.cursor:t.filtered.findIndex(e=>t.sel.has(e.name));
+  if(cur<0)cur=0;
+  const cols=(t.vm==='list')?1:gridCols(pane);
+  let ni=cur;
+  if(dir==='left')ni=cur-1; else if(dir==='right')ni=cur+1;
+  else if(dir==='up')ni=cur-cols; else if(dir==='down')ni=cur+cols;
+  else if(dir==='home')ni=0; else if(dir==='end')ni=t.filtered.length-1;
+  ni=Math.max(0,Math.min(t.filtered.length-1,ni));
+  t.cursor=ni;
+  if(extend){ const a=(t.anchor!=null)?t.anchor:cur; const lo=Math.min(a,ni),hi=Math.max(a,ni); t.sel=new Set(t.filtered.slice(lo,hi+1).map(e=>e.name)); }
+  else { t.sel=new Set([t.filtered[ni].name]); t.anchor=ni; }
+  syncSelectionCSS(pane);
+  let el=null; pane.el.querySelectorAll('.gi,.li,.ti').forEach(x=>{ if(!el&&x.getAttribute('data-name')===t.filtered[ni].name)el=x; });
+  if(el)el.scrollIntoView({block:'nearest'});
+}
+function openCursor(){ const t=ct(); if(!t)return; const e=t.filtered[t.cursor!=null?t.cursor:0]; if(e)openItem(e.path,e.isDirectory,e.isImage); }
 function syncSelectionCSS(pane){
   pane=pane||focusedPane();const t=tabOfPane(pane);if(!t)return;
   pane.el.querySelectorAll('.gi,.li,.ti').forEach(el=>{
@@ -588,7 +632,27 @@ function goUp(){const t=ct();if(t.path!=='/')nav(t.path.replace(/\/[^/]+\/?$/,''
 function setVM(m){const t=ct();if(t)t.vm=m;renderTB();buildContent(focusedPane())}
 function setSortCol(col){const t=ct();if(!t)return;if(t.sortBy===col)t.sortAsc=!t.sortAsc;else{t.sortBy=col;t.sortAsc=true}doSort()}
 async function newFolder(){const n=prompt('New folder name:');if(n){await api.mkdir(ct().path+'/'+n);await loadDir()}}
-async function renameSel(){const t=ct(),name=[...t.sel][0];if(!name)return;const e=t.entries.find(x=>x.name===name);if(!e)return;const nn=prompt('Rename to:',e.name);if(nn&&nn!==e.name){const r=await api.smartRename(e.path,nn);if(r.ok)await loadDir();else if(r.error)alert('Rename failed: '+r.error)}}
+function renameSel(){const t=ct(),name=[...t.sel][0];if(!name)return;startRename(name)}
+// In-place rename overlay (Windows Explorer F2 behaviour): edit the label, Enter commits, Esc cancels.
+function startRename(name){
+  const t=ct(); const e=t&&t.entries.find(x=>x.name===name); if(!e)return;
+  const pane=focusedPane(); let tile=null; pane.el.querySelectorAll('.gi,.li,.ti').forEach(x=>{ if(!tile&&x.getAttribute('data-name')===name)tile=x; });
+  if(!tile){ const nn=prompt('Rename to:',name); if(nn&&nn!==name)api.smartRename(e.path,nn).then(r=>{ if(r&&r.ok)loadDir(); else if(r&&r.error)alert('Rename failed: '+r.error); }); return; }
+  const label=tile.querySelector('.fn,.tname,.ln span'); if(!label)return;
+  const inp=document.createElement('input'); inp.className='rename-input'; inp.value=name; inp.spellcheck=false;
+  label.replaceWith(inp); inp.focus();
+  const dot=name.lastIndexOf('.'); try{ inp.setSelectionRange(0, dot>0?dot:name.length); }catch{}
+  let done=false;
+  const commit=async(save)=>{ if(done)return; done=true; const nn=inp.value.trim();
+    if(save&&nn&&nn!==name){ const r=await api.smartRename(e.path,nn); if(r&&r.error)alert('Rename failed: '+r.error); }
+    await loadDir();
+  };
+  inp.addEventListener('keydown',ev=>{ ev.stopPropagation(); if(ev.key==='Enter'){ ev.preventDefault(); commit(true); } else if(ev.key==='Escape'){ ev.preventDefault(); commit(false); } });
+  inp.addEventListener('blur',()=>commit(true));
+  inp.addEventListener('mousedown',ev=>ev.stopPropagation());
+  inp.addEventListener('click',ev=>ev.stopPropagation());
+  inp.addEventListener('dblclick',ev=>ev.stopPropagation());
+}
 async function deleteSel(){const t=ct();if(!t.sel.size)return;if(!confirm(`Move ${t.sel.size} item(s) to trash?`))return;for(const n of t.sel){const e=t.entries.find(x=>x.name===n);if(e)await api.trash(e.path)}t.sel=new Set();await loadDir()}
 async function permDeleteSel(){const t=ct();if(!t.sel.size)return;const paths=[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean);const r=await api.permanentDelete(paths);if(r.ok){t.sel=new Set();await loadDir()}}
 async function cutSel(){const t=ct();const paths=[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean);if(!paths.length)return;await api.clipSet({paths,action:'cut'})}
@@ -781,7 +845,7 @@ m.innerHTML=h;m.style.left=Math.min(ev.clientX,innerWidth-220)+'px';m.style.top=
 function hideCtx(){document.getElementById('ctx').style.display='none'}
 // Use mousedown instead of click — click fires after contextmenu and hides the menu immediately
 document.addEventListener('mousedown',e=>{if(e.button===0&&!e.target.closest('.ctx'))hideCtx()});
-async function renCtx(p){hideCtx();const n=p.split('/').pop(),nn=prompt('Rename:',n);if(nn&&nn!==n){const r=await api.smartRename(p,nn);if(r.ok)await loadDir();else if(r.error)alert('Rename failed: '+r.error)}}
+function renCtx(p){hideCtx();startRename(p.split('/').pop())}
 async function delCtx(p){hideCtx();if(confirm(`Trash "${p.split('/').pop()}"?`)){await api.trash(p);ct().sel=new Set();await loadDir()}}
 async function permDelCtx(p){hideCtx();await api.permanentDelete([p]);ct().sel=new Set();await loadDir()}
 async function showProps(p){hideCtx();const r=await api.stat(p);if(r.ok){const s=r.stats;alert(`Path: ${p}\nSize: ${fmt(s.size)}\nCreated: ${s.created?.split('T')[0]||'N/A'}\nModified: ${s.modified?.split('T')[0]||'N/A'}\nPermissions: ${s.permissions}`)}}
@@ -798,26 +862,40 @@ async function showOpenWith(p){
 // ═══ KEYBOARD ═══
 document.addEventListener('keydown',e=>{
   if(document.querySelector('.modal-bg'))return;
-  if(e.key==='Backspace'||(e.altKey&&e.key==='ArrowLeft')){e.preventDefault();goBack()}
-  if(e.altKey&&e.key==='ArrowRight')goFwd();if(e.altKey&&e.key==='ArrowUp')goUp();
-  if(e.key==='Delete'&&e.shiftKey){e.preventDefault();permDeleteSel()}
-  else if(e.key==='Delete')deleteSel();
-  if(e.key==='F2')renameSel();if(e.key==='F5')loadDir();
-  if(e.ctrlKey&&e.key==='c'){e.preventDefault();copySel()}
-  if(e.ctrlKey&&e.key==='x'){e.preventDefault();cutSel()}
-  if(e.ctrlKey&&e.key==='v'){e.preventDefault();pasteHere()}
-  if(e.ctrlKey&&e.key==='t'){e.preventDefault();addTab(ct().path)}
-  if(e.ctrlKey&&e.key==='w'){e.preventDefault();closeTab(focusedPane()?.tabId)}
-  if(e.ctrlKey&&e.key==='a'){e.preventDefault();ct().sel=new Set(ct().filtered.map(x=>x.name));syncSelectionCSS()}
-  if(e.key==='F6'){e.preventDefault();if(panes.length>1)setFocus((focusedPaneIdx+1)%panes.length)}
-  if(e.shiftKey&&e.key==='Home'){e.preventDefault();selAbove()}
-  if(e.shiftKey&&e.key==='End'){e.preventDefault();selBelow()}
-  // F12: show debug log
-  if(e.key==='F12'){e.preventDefault();showDebugLog()}
-  // Type-ahead: typing letters jumps to the first matching file (Windows Explorer behaviour)
-  else if(!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.key&&e.key.length===1&&!/^(input|textarea|select)$/i.test(e.target.tagName)){
-    typeAhead(e.key);
+  const inEditable=/^(input|textarea|select)$/i.test(e.target.tagName)||e.target.isContentEditable;
+  // Address-bar / search shortcuts work regardless of focus
+  if(e.ctrlKey&&(e.key==='l'||e.key==='L')){e.preventDefault();editAddress();return;}
+  if(e.altKey&&(e.key==='d'||e.key==='D')){e.preventDefault();editAddress();return;}
+  if(e.ctrlKey&&(e.key==='f'||e.key==='F')){e.preventDefault();const s=document.getElementById('searchBox');if(s){s.focus();s.select();}return;}
+  if(inEditable)return; // an input has focus — let it handle keys
+  if(e.key==='Backspace'||(e.altKey&&e.key==='ArrowLeft')){e.preventDefault();goBack();return;}
+  if(e.altKey&&e.key==='ArrowRight'){e.preventDefault();goFwd();return;}
+  if(e.altKey&&e.key==='ArrowUp'){e.preventDefault();goUp();return;}
+  if(e.key==='Delete'&&e.shiftKey){e.preventDefault();permDeleteSel();return;}
+  if(e.key==='Delete'){deleteSel();return;}
+  if(e.key==='F2'){renameSel();return;}
+  if(e.key==='F5'){loadDir();return;}
+  if(e.ctrlKey&&e.shiftKey&&(e.key==='N'||e.key==='n')){e.preventDefault();newFolder();return;}
+  if(e.ctrlKey&&(e.key==='c'||e.key==='C')){e.preventDefault();copySel();return;}
+  if(e.ctrlKey&&(e.key==='x'||e.key==='X')){e.preventDefault();cutSel();return;}
+  if(e.ctrlKey&&(e.key==='v'||e.key==='V')){e.preventDefault();pasteHere();return;}
+  if(e.ctrlKey&&(e.key==='t'||e.key==='T')){e.preventDefault();addTab(ct().path);return;}
+  if(e.ctrlKey&&(e.key==='w'||e.key==='W')){e.preventDefault();closeTab(focusedPane()?.tabId);return;}
+  if(e.ctrlKey&&(e.key==='a'||e.key==='A')){e.preventDefault();ct().sel=new Set(ct().filtered.map(x=>x.name));syncSelectionCSS();return;}
+  if(e.key==='F6'){e.preventDefault();if(panes.length>1)setFocus((focusedPaneIdx+1)%panes.length);return;}
+  if(e.key==='F12'){e.preventDefault();showDebugLog();return;}
+  // Arrow-key navigation + Enter to open (Windows Explorer behaviour)
+  if(!e.altKey&&!e.ctrlKey){
+    if(e.key==='ArrowLeft'){e.preventDefault();moveCursor('left',e.shiftKey);return;}
+    if(e.key==='ArrowRight'){e.preventDefault();moveCursor('right',e.shiftKey);return;}
+    if(e.key==='ArrowUp'){e.preventDefault();moveCursor('up',e.shiftKey);return;}
+    if(e.key==='ArrowDown'){e.preventDefault();moveCursor('down',e.shiftKey);return;}
+    if(e.key==='Home'){e.preventDefault();e.shiftKey?selAbove():moveCursor('home',false);return;}
+    if(e.key==='End'){e.preventDefault();e.shiftKey?selBelow():moveCursor('end',false);return;}
+    if(e.key==='Enter'){e.preventDefault();openCursor();return;}
   }
+  // Type-ahead: typing letters jumps to the first matching file
+  if(!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.key&&e.key.length===1){ typeAhead(e.key); }
 });
 let taBuf='', taTmr=null;
 function typeAhead(ch){
