@@ -2,7 +2,7 @@
 // This is the single biggest win for browsing slow SMB/network folders (stat = network round-trip).
 process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '64';
 
-const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net, nativeImage, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net, nativeImage, clipboard, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -193,6 +193,11 @@ function createPhotosWindow(folder, imagePath, sortedImagePaths) {
 }
 
 app.whenReady().then(() => {
+  // Remove the default application menu — it's what provides the Ctrl/Cmd+R "reload" accelerator
+  // that was blowing away the renderer and dumping the user back on Home. The app drives all of
+  // its own shortcuts from the renderer; the only menu-provided one we want (refresh) is handled
+  // via guardReload → 'fx:refresh'.
+  Menu.setApplicationMenu(null);
   // Register protocol to serve local files — more reliable than file:// which gets blocked by CSP
   protocol.registerFileProtocol('localthumb', (request, callback) => {
     // URL format: localthumb://FILEPATH
@@ -287,13 +292,11 @@ function getResUsage() {
 let batchAbortId = 0;
 
 ipcMain.handle('fs:generateThumbBatch', async (_, paths, batchId) => {
+  // NOTE: no global batchAbortId abort here. The renderer self-throttles (IntersectionObserver
+  // only requests near-viewport items) and serializes flushes, so the old abort check just made
+  // overlapping batches cancel each other — which broke thumbnails in large image/video folders.
   const results = {};
   for (const rawPath of paths) {
-    // Check if this batch was cancelled (user navigated away)
-    if (batchAbortId !== batchId) {
-      perfLog({ event: 'batch_aborted', batchId, processed: Object.keys(results).length });
-      return results; // Return what we have so far
-    }
     const fp = normPath(rawPath);
     // Already cached?
     if (thumbMemCache.has(fp)) { results[rawPath] = thumbMemCache.get(fp); continue; }

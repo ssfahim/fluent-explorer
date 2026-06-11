@@ -242,7 +242,7 @@ function makePaneEl(){
 function createPane(tabId){
   const {wrap,hdr,content}=makePaneEl();
   document.getElementById('panes').appendChild(wrap);
-  const pane={tabId,el:content,hdrEl:hdr,wrap,io:null,imgMap:new Map(),pending:new Set(),flushTmr:null};
+  const pane={tabId,el:content,hdrEl:hdr,wrap,io:null,imgMap:new Map(),pending:new Set(),flushTmr:null,flushing:false,flushAgain:false};
   wirePane(pane);
   panes.push(pane);
   return pane;
@@ -499,31 +499,40 @@ function observeThumbs(pane){
   }
 }
 
+// Serialized per pane: if a flush is already running, just mark "run again" and let the
+// running one pick up the newly-queued paths. Concurrent flushes used to call newBatchId per
+// chunk and mutually abort each other in the main process — which is why large folders
+// (and slow video chunks) showed no thumbnails.
 async function flushThumbs(pane){
-  if(!pane.pending.size) return;
-  const paths=[...pane.pending]; pane.pending.clear();
+  if(pane.flushing){ pane.flushAgain=true; return; }
+  pane.flushing=true;
+  try{
+    do{
+      pane.flushAgain=false;
+      if(!pane.pending.size) continue;
+      const paths=[...pane.pending]; pane.pending.clear();
 
-  // Cheap pass: whatever the main process already has cached in memory.
-  let mainCached={};
-  try{ mainCached=await api.getCachedThumbs(paths); }catch{}
-  const need=[];
-  for(const p of paths){
-    const url=mainCached[p];
-    if(url){ thumbCache[p]=url; const el=pane.imgMap.get(p); if(el)el.src=url; }
-    else need.push(p);
-  }
-  if(!need.length) return;
-
-  // Generate the rest in chunks of 30 (the main process caps concurrency internally).
-  for(let i=0;i<need.length;i+=30){
-    const chunk=need.slice(i,i+30);
-    let results=null;
-    try{ const batchId=await api.newBatchId(); results=await api.generateThumbBatch(chunk, batchId); }catch{}
-    if(!results) continue;
-    for(const[p,url]of Object.entries(results)){
-      if(url){ thumbCache[p]=url; const el=pane.imgMap.get(p); if(el)el.src=url; dbg({event:'thumb_assign_ok',path:p}); }
-    }
-  }
+      // Cheap pass: whatever the main process already has cached in memory.
+      let mainCached={};
+      try{ mainCached=await api.getCachedThumbs(paths); }catch{}
+      const need=[];
+      for(const p of paths){
+        const url=mainCached[p];
+        if(url){ thumbCache[p]=url; const el=pane.imgMap.get(p); if(el)el.src=url; }
+        else need.push(p);
+      }
+      // Generate the rest in chunks of 30 (main caps concurrency + memory internally).
+      for(let i=0;i<need.length;i+=30){
+        const chunk=need.slice(i,i+30);
+        let results=null;
+        try{ results=await api.generateThumbBatch(chunk, 0); }catch{} // no per-chunk batch id → no abort churn
+        if(!results) continue;
+        for(const[p,url]of Object.entries(results)){
+          if(url){ thumbCache[p]=url; const el=pane.imgMap.get(p); if(el)el.src=url; dbg({event:'thumb_assign_ok',path:p}); }
+        }
+      }
+    } while(pane.flushAgain || pane.pending.size);
+  } finally { pane.flushing=false; }
 }
 
 // ═══ SELECTION — toggle CSS class, NO re-render (operates on the focused pane) ═══

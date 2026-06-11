@@ -23,6 +23,22 @@ Both apps appear as separate windows in your taskbar. Closing Photos does not cl
 
 ---
 
+## What's new in v1.6.2
+
+> ⚠️ **You must re-run `./install.sh` after pulling.** The app runs from a copy in
+> `~/.local/share/win-explorer/`; `git pull` alone does not update the running app.
+
+- **Actually fixed thumbnails not loading in large image/video folders.** The real cause (v1.6.1
+  guessed wrong) was that scrolling fired overlapping thumbnail "flushes", and each chunk called
+  `newBatchId()` which bumped a global counter that made the in-flight batches **abort each other**
+  in the main process — badly amplified by slow ffmpeg video chunks. Flushes are now serialized per
+  pane and the self-cancelling batch-id was removed. Verified: a 1500-item video folder now loads
+  thumbnails (was ~0) with no batch aborts.
+- **Actually fixed Ctrl/Cmd+R.** The earlier `before-input-event` guard wasn't enough; the default
+  application menu's reload accelerator still fired. The default menu is now removed
+  (`Menu.setApplicationMenu(null)`), so Ctrl+R refreshes the folder in place instead of reloading
+  the app to Home.
+
 ## What's new in v1.6.1
 
 - **Fixed thumbnails not loading in large image/video folders** — `loading="lazy"` (added in v1.5)

@@ -1,4 +1,15 @@
-# v1.5 Testing Checklist (run on the Linux PC)
+# Testing Checklist (run on the Linux PC)
+
+> ⚠️ **DEPLOY FIRST:** the app runs from `~/.local/share/win-explorer/`, not the git repo.
+> After `git pull`, run **`./install.sh`** (or launch from the repo with `npm start`) or you'll
+> still be running the old code.
+
+## v1.6.2 fixes
+- [ ] Open a folder with **thousands of images/videos** → thumbnails load (progressively as you
+      scroll). Previously they barely loaded at all.
+- [ ] Press **Ctrl+R** → refreshes the current folder in place; does NOT reload the app to Home.
+
+
 
 These changes were written and statically verified on macOS, but the SMB / clipboard /
 drag code paths only execute on Linux. Run through this on your home PC after
