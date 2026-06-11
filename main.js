@@ -3,6 +3,17 @@
 process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '64';
 
 const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net, nativeImage, clipboard, Menu } = require('electron');
+
+// Home-PC performance: offload image rasterization to the GPU and allow acceleration even when
+// Chromium has blocklisted the (often older) Linux GPU. Smoother image paint, lower CPU/RAM.
+// If a flaky driver ever causes artifacts, launch with FLUENT_NO_GPU=1 to skip these.
+if (!process.env.FLUENT_NO_GPU) {
+  app.commandLine.appendSwitch('enable-gpu-rasterization');
+  app.commandLine.appendSwitch('enable-zero-copy');
+  app.commandLine.appendSwitch('ignore-gpu-blocklist');
+} else {
+  app.disableHardwareAcceleration();
+}
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -80,8 +91,15 @@ async function buildEntry(dirPath, d) {
   }
 }
 let sharp;
-try { sharp = require('sharp'); sharp.cache({ memory: 100, files: 20 }); sharp.concurrency(2); } // Limit sharp to 2 threads and 100MB cache
-catch { console.error('sharp not found, falling back to nativeImage'); }
+let SHARP_JPEG_OK = false; // does this sharp/libvips build actually decode JPEG?
+try {
+  sharp = require('sharp');
+  sharp.cache({ memory: 100, files: 20 });
+  sharp.concurrency(2); // Limit sharp to 2 threads and 100MB cache
+  // Some Linux sharp/libvips builds ship without a JPEG decoder → "Input file contains
+  // unsupported image format" on ordinary .jpg. Probe it so we can skip straight to nativeImage.
+  try { SHARP_JPEG_OK = !!(sharp.format && sharp.format.jpeg && sharp.format.jpeg.input && sharp.format.jpeg.input.file); } catch { SHARP_JPEG_OK = false; }
+} catch { console.error('sharp not found, falling back to nativeImage'); }
 
 const HOME = os.homedir();
 const CACHE = path.join(HOME, '.cache', 'winex-thumbs');
@@ -291,6 +309,30 @@ function getResUsage() {
 // visible paths (max 30). This runs them sequentially with sharp.
 let batchAbortId = 0;
 
+// Generate a 200px JPEG thumbnail at `cp`. sharp first (fast) when its JPEG decoder works,
+// otherwise Electron's nativeImage (Chromium codecs) — the fix for libvips builds that throw
+// "Input file contains unsupported image format" on ordinary JPEGs. Returns true on success.
+async function generateThumbFile(fp, cp) {
+  if (sharp && SHARP_JPEG_OK) {
+    try {
+      await sharp(fp, { failOn: 'none', limitInputPixels: 300000000 })
+        .rotate() // honor EXIF orientation
+        .resize(200, 200, { fit: 'cover', withoutEnlargement: true })
+        .jpeg({ quality: 72, mozjpeg: true })
+        .toFile(cp);
+      return true;
+    } catch (e) { dbg({ event: 'sharp_fail_fallback', path: fp, error: e.message }); }
+  }
+  try {
+    const img = nativeImage.createFromPath(fp);
+    if (!img.isEmpty()) {
+      await fs.promises.writeFile(cp, img.resize({ width: 200, quality: 'good' }).toJPEG(72));
+      return true;
+    }
+  } catch (e) { dbg({ event: 'nativeimage_fail', path: fp, error: e.message }); }
+  return false;
+}
+
 ipcMain.handle('fs:generateThumbBatch', async (_, paths, batchId) => {
   // NOTE: no global batchAbortId abort here. The renderer self-throttles (IntersectionObserver
   // only requests near-viewport items) and serializes flushes, so the old abort check just made
@@ -332,18 +374,10 @@ ipcMain.handle('fs:generateThumbBatch', async (_, paths, batchId) => {
         } else {
           thumbMemCache.set(fp, null); results[rawPath] = null; continue;
         }
-      } else if (sharp) {
-        // Image files: use sharp (fast, non-blocking)
-        await sharp(fp, { failOnError: false, limitInputPixels: 100000000 })
-          .resize(200, 200, { fit: 'cover', withoutEnlargement: true })
-          .jpeg({ quality: 70, mozjpeg: true })
-          .toFile(cp);
       } else {
-        // Fallback: nativeImage
-        const img = nativeImage.createFromPath(fp);
-        if (img.isEmpty()) { thumbMemCache.set(fp, null); results[rawPath] = null; continue; }
-        const resized = img.resize({ width: 200, quality: 'good' });
-        await fs.promises.writeFile(cp, resized.toJPEG(70));
+        // Image files: sharp if healthy, else Electron nativeImage (robust JPEG/PNG decode)
+        const ok = await generateThumbFile(fp, cp);
+        if (!ok) { thumbMemCache.set(fp, null); results[rawPath] = null; dbg({ event: 'thumb_error', path: fp, error: 'decode failed (sharp+nativeImage)' }); continue; }
       }
       const url = 'localthumb://' + cp;
       thumbMemCache.set(fp, url);
@@ -376,21 +410,11 @@ ipcMain.handle('fs:getThumb', async (_, filePath) => {
   const hash = hashPath(fp);
   const cp = path.join(CACHE, hash + '.jpg');
   try { await fs.promises.access(cp); const url = 'localthumb://' + cp; thumbMemCache.set(fp, url); return url; } catch {}
-  try {
-    if (sharp) {
-      await sharp(fp, { failOnError: false, limitInputPixels: 100000000 })
-        .resize(200, 200, { fit: 'cover', withoutEnlargement: true })
-        .jpeg({ quality: 70, mozjpeg: true })
-        .toFile(cp);
-    } else {
-      const img = nativeImage.createFromPath(fp);
-      if (img.isEmpty()) { thumbMemCache.set(fp, null); return null; }
-      await fs.promises.writeFile(cp, img.resize({ width: 200 }).toJPEG(70));
-    }
-    const url = 'localthumb://' + cp;
-    thumbMemCache.set(fp, url);
-    return url;
-  } catch { thumbMemCache.set(fp, null); return null; }
+  const ok = await generateThumbFile(fp, cp);
+  if (!ok) { thumbMemCache.set(fp, null); return null; }
+  const url = 'localthumb://' + cp;
+  thumbMemCache.set(fp, url);
+  return url;
 });
 
 ipcMain.handle('fs:getVideoThumb', async (_, vp) => {

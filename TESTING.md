@@ -4,6 +4,20 @@
 > After `git pull`, run **`./install.sh`** (or launch from the repo with `npm start`) or you'll
 > still be running the old code.
 
+## v1.7.0
+- [ ] **Thumbnails appear** for your JPEG folders (the sharp "unsupported image format" failure now
+      falls back to nativeImage). Check `~/.cache/winex-debug.log` — `sharp_fail_fallback` entries are
+      expected/fine; persistent `thumb_error` means even nativeImage failed (rare).
+- [ ] **Immersive viewer:** open an image → double-click it (or the ⛶ button) → all chrome hides,
+      only the image shows on black. Move the mouse → chrome returns; idle ~3s → it auto-hides.
+- [ ] **Navigation:** ‹ › chevrons and ←/→ keys move between images; Esc returns to the gallery.
+      Paging feels instant (blurred backdrop + preloaded neighbours).
+- [ ] **F** toggles filmstrip; wheel / `+` `-` zoom; `Ctrl+0` fit; `F11` fullscreen.
+- [ ] **Explorer type-ahead:** with a folder focused, type the first letters of a file → it selects/
+      scrolls to it.
+- [ ] App feels smoother (GPU accel). If you get visual artifacts or a black window, relaunch with
+      `FLUENT_NO_GPU=1 ~/.local/share/win-explorer/launch-explorer.sh`.
+
 ## v1.6.2 fixes
 - [ ] Open a folder with **thousands of images/videos** → thumbnails load (progressively as you
       scroll). Previously they barely loaded at all.

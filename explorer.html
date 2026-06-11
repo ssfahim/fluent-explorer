@@ -814,7 +814,23 @@ document.addEventListener('keydown',e=>{
   if(e.shiftKey&&e.key==='End'){e.preventDefault();selBelow()}
   // F12: show debug log
   if(e.key==='F12'){e.preventDefault();showDebugLog()}
+  // Type-ahead: typing letters jumps to the first matching file (Windows Explorer behaviour)
+  else if(!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.key&&e.key.length===1&&!/^(input|textarea|select)$/i.test(e.target.tagName)){
+    typeAhead(e.key);
+  }
 });
+let taBuf='', taTmr=null;
+function typeAhead(ch){
+  clearTimeout(taTmr); taBuf+=ch.toLowerCase(); taTmr=setTimeout(()=>{taBuf='';},900);
+  const t=ct(); if(!t||!t.filtered.length) return;
+  let match=t.filtered.find(e=>e.name.toLowerCase().startsWith(taBuf));
+  if(!match&&taBuf.length>1){ taBuf=ch.toLowerCase(); match=t.filtered.find(e=>e.name.toLowerCase().startsWith(taBuf)); } // restart on the new letter
+  if(!match) return;
+  t.sel=new Set([match.name]);
+  const pane=focusedPane(); syncSelectionCSS(pane);
+  let el=null; pane.el.querySelectorAll('.gi,.li,.ti').forEach(x=>{ if(!el&&x.getAttribute('data-name')===match.name) el=x; });
+  if(el) el.scrollIntoView({block:'nearest'});
+}
 
 function showDebugLog(){
   const last50=debugLines.slice(-50).map(d=>JSON.stringify(d)).join('\n');

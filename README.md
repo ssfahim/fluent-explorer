@@ -23,6 +23,38 @@ Both apps appear as separate windows in your taskbar. Closing Photos does not cl
 
 ---
 
+## What's new in v1.7.0
+
+> ⚠️ Re-run `./install.sh` after pulling (the app runs from `~/.local/share/win-explorer/`).
+
+- **Thumbnails now work even when `sharp` can't decode JPEG.** Your debug log showed
+  `sharp`/libvips throwing *"Input file contains unsupported image format"* on ordinary `.jpg`
+  files — and there was no fallback. Thumbnail generation now falls back to Electron's
+  `nativeImage` (Chromium's codecs, always available) whenever sharp fails or is unhealthy, so
+  thumbnails generate regardless. *(Optional: to get the faster sharp path back, repair it — see
+  "Faster thumbnails" below.)*
+- **Immersive image viewer, like Windows Photos.** Double-click the image (or the ⛶ button) hides
+  **all** chrome and shows only the photo on black; the toolbar/filmstrip also auto-hide after a
+  couple of idle seconds and reappear on mouse move. Navigate with the on-screen ‹ › chevrons or the
+  **←/→** keys; **Esc** exits to the gallery. Plus: a blurred instant backdrop + neighbour
+  preloading/decoding so paging feels instant, **F** toggles the filmstrip, mouse-wheel / `+` `-`
+  zoom, `Ctrl+0` fit, `F11` fullscreen.
+- **Explorer type-ahead.** Start typing a filename to jump to it (Windows Explorer behaviour).
+- **Home-PC GPU acceleration.** Image rasterization is offloaded to the GPU (enabled even on
+  Chromium-blocklisted Linux GPUs) for smoother rendering and lower CPU. If a flaky driver causes
+  artifacts/black screen, launch with `FLUENT_NO_GPU=1` to disable it.
+
+### Faster thumbnails (optional sharp repair)
+The nativeImage fallback always works, but sharp is faster. To check/repair sharp on your PC:
+```bash
+node -e "console.log(require('sharp').format.jpeg.input.file)"   # false = sharp can't decode JPEG
+cd ~/.local/share/win-explorer
+rm -rf node_modules/sharp node_modules/@img
+npm install --include=optional --cpu=x64 --os=linux --libc=glibc sharp
+# if that still fails, build against system libvips:
+sudo apt install libvips-dev && SHARP_FORCE_GLOBAL_LIBVIPS=1 npm install --build-from-source sharp
+```
+
 ## What's new in v1.6.2
 
 > ⚠️ **You must re-run `./install.sh` after pulling.** The app runs from a copy in

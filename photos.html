@@ -29,8 +29,16 @@ button{border:none;cursor:pointer;background:transparent;color:#e0e0e0;font-fami
 .viewer{flex:1;display:none;flex-direction:column;background:#000;position:relative}
 .viewer.on{display:flex}
 .vmain{flex:1;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
-.vmain img{position:absolute;max-width:95%;max-height:95%;object-fit:contain;border-radius:4px;transition:opacity .1s}.vmain img.hid{opacity:0;pointer-events:none}
-.arr{position:absolute;top:50%;transform:translateY(-50%);width:48px;height:48px;border-radius:50%;background:rgba(255,255,255,.08);font-size:22px;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);z-index:2;transition:background .1s}.arr:hover{background:rgba(255,255,255,.2)}.arr.l{left:20px}.arr.r{right:20px}
+/* Blurred instant backdrop (shows the cached thumb the moment you navigate, while full-res decodes) */
+.vbg{position:absolute;inset:0;background-size:cover;background-position:center;filter:blur(28px) brightness(.45);opacity:.55;z-index:0;transition:opacity .2s;pointer-events:none}
+/* Full image: centered, contained, never upscaled past its natural size (like Windows Photos) */
+.vmain img{position:absolute;max-width:100%;max-height:100%;object-fit:contain;z-index:1;transition:opacity .12s}.vmain img.hid{opacity:0;pointer-events:none}
+.arr{position:absolute;top:50%;transform:translateY(-50%);width:48px;height:48px;border-radius:50%;background:rgba(255,255,255,.08);font-size:22px;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);z-index:5;transition:opacity .2s,background .1s}.arr:hover{background:rgba(255,255,255,.25)}.arr.l{left:20px}.arr.r{right:20px}
+/* IMMERSIVE: hide all chrome, show only the image (toggled by double-click / button / idle) */
+.viewer.chrome-hidden{cursor:none}
+.viewer.chrome-hidden .vtop,.viewer.chrome-hidden .vbot,.viewer.chrome-hidden .film,.viewer.chrome-hidden .arr{opacity:0;pointer-events:none}
+.vtop,.vbot,.film{transition:opacity .2s}
+.viewer.film-off .film{display:none}
 .vtop{position:absolute;top:0;left:0;right:0;height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;background:linear-gradient(rgba(0,0,0,.6),transparent);z-index:3}
 .vinfo{font-size:13px;display:flex;align-items:center;gap:10px}.vinfo .fn{font-weight:600}.vinfo .fc{opacity:.5;font-size:12px}
 .vb{width:36px;height:36px;border-radius:6px;font-size:14px;display:flex;align-items:center;justify-content:center;transition:background .1s}.vb:hover{background:rgba(255,255,255,.12)}.vb.act{background:rgba(96,205,255,.2);color:#60cdff}
@@ -181,11 +189,22 @@ async function deepScan(){
 
 // ═══ VIEWER ═══
 async function showViewer(idx){
-  mode='viewer'; vi=idx; zoom=1; infoOn=false;
+  mode='viewer'; vi=idx; zoom=1; infoOn=false; chromeHidden=false;
   document.getElementById('gallery').style.display='none';
   document.getElementById('viewer').className='viewer on';
   renderBar(); buildDOM(); await showCur(); preloadNear();
+  showChrome(); // visible briefly, then auto-hides while idle
 }
+
+// ═══ IMMERSIVE CHROME — auto-hide on idle, double-click / button toggles (like Windows Photos) ═══
+let chromeHidden=false, idleTmr=null;
+function applyChrome(){ const v=document.getElementById('viewer'); if(v) v.classList.toggle('chrome-hidden', chromeHidden && mode==='viewer'); }
+function showChrome(){ chromeHidden=false; applyChrome(); clearTimeout(idleTmr); idleTmr=setTimeout(()=>{ if(mode==='viewer'){ chromeHidden=true; applyChrome(); } }, 2600); }
+function hideChrome(){ chromeHidden=true; applyChrome(); clearTimeout(idleTmr); }
+function toggleChrome(){ if(mode!=='viewer') return; chromeHidden ? showChrome() : hideChrome(); }
+function toggleFilm(){ const v=document.getElementById('viewer'); if(v) v.classList.toggle('film-off'); }
+// Any mouse movement in the viewer reveals the chrome and restarts the idle timer.
+document.addEventListener('mousemove', ()=>{ if(mode==='viewer' && chromeHidden) showChrome(); });
 
 function buildDOM(){
   const v=document.getElementById('viewer');
@@ -194,12 +213,15 @@ function buildDOM(){
       <div class="vinfo"><span>🖼️</span><span class="fn" id="vfn"></span><span class="fc" id="vfc"></span></div>
       <div style="display:flex;gap:4px">
         <button class="vb" id="infoBtn" onclick="infoOn=!infoOn;updUI()">ℹ️</button>
-        <button class="vb" onclick="toGallery()">✕</button>
+        <button class="vb" id="filmBtn" title="Toggle filmstrip (F)" onclick="toggleFilm()">▦</button>
+        <button class="vb" id="immBtn" title="Immersive — show only the image (double-click image)" onclick="toggleChrome()">⛶</button>
+        <button class="vb" title="Back to gallery (Esc)" onclick="toGallery()">✕</button>
       </div>
     </div>
-    <div class="vmain" id="vmain">
-      ${images.length>1?'<button class="arr l" onclick="goPrev()">‹</button>':''}
-      ${images.length>1?'<button class="arr r" id="arrR" onclick="goNext()">›</button>':''}
+    <div class="vmain" id="vmain" ondblclick="toggleChrome()">
+      <div class="vbg" id="vbg"></div>
+      ${images.length>1?'<button class="arr l" title="Previous (←)" onclick="event.stopPropagation();goPrev()">‹</button>':''}
+      ${images.length>1?'<button class="arr r" id="arrR" title="Next (→)" onclick="event.stopPropagation();goNext()">›</button>':''}
       <img id="imgA" src="" draggable="true">
       <img id="imgB" src="" class="hid" draggable="true">
     </div>
@@ -221,52 +243,46 @@ function buildDOM(){
   imgB.addEventListener('dragstart', e => { e.preventDefault(); api.nativeDrag(images[vi].path); });
 }
 
-async function showCur(){
+// One code path for showing image #idx. Shows the cached thumb instantly as a blurred backdrop,
+// then decodes the full-res off-screen and crossfades it in — so arrowing feels instant.
+let navToken=0;
+async function display(idx){
+  if(!images.length)return;
+  vi=((idx%images.length)+images.length)%images.length;
+  zoom=1;
+  const my=++navToken;
   const img=images[vi]; if(!img)return;
+  // Instant blurred backdrop from the thumbnail (if we already have it)
+  const vbg=document.getElementById('vbg');
+  if(vbg){ const th=thumbUrls[img.path]; vbg.style.backgroundImage=th?`url("${th.replace(/"/g,'%22')}")`:'none'; }
   let url=preloaded[img.path];
   if(!url){ url=await api.imageUrl(img.path); preloaded[img.path]=url; }
-  const act=useA?imgA:imgB, inact=useA?imgB:imgA;
-  act.src=url; act.className=''; act.style.transform=`scale(${zoom})`;
-  inact.className='hid';
-  updUI(); renderFilm();
-}
-
-async function goNext(){
-  vi=(vi+1)%images.length; zoom=1;
-  const img=images[vi];
-  let url=preloaded[img.path];
-  if(!url){ url=await api.imageUrl(img.path); preloaded[img.path]=url; }
+  if(my!==navToken)return; // user moved on
   useA=!useA;
   const act=useA?imgA:imgB, inact=useA?imgB:imgA;
-  act.src=url; act.className=''; act.style.transform='scale(1)';
-  inact.className='hid';
+  act.style.transform='scale(1)';
+  act.src=url;
+  try{ if(act.decode) await act.decode(); }catch{}
+  if(my!==navToken)return;
+  act.className=''; inact.className='hid';
   updUI(); renderFilm(); preloadNear();
 }
+function showCur(){ return display(vi); }
+function goNext(){ return display(vi+1); }
+function goPrev(){ return display(vi-1); }
+function jumpTo(i){ return display(i); }
 
-async function goPrev(){
-  vi=(vi-1+images.length)%images.length; zoom=1;
-  const img=images[vi];
-  let url=preloaded[img.path];
-  if(!url){ url=await api.imageUrl(img.path); preloaded[img.path]=url; }
-  useA=!useA;
-  const act=useA?imgA:imgB, inact=useA?imgB:imgA;
-  act.src=url; act.className=''; act.style.transform='scale(1)';
-  inact.className='hid';
-  updUI(); renderFilm(); preloadNear();
-}
-
+// Warm the immediate neighbours: fetch the URL AND kick off a decode so the next arrow is instant.
 async function preloadNear(){
-  for(let o=1;o<=5;o++){
-    for(const d of [-1,1]){
-      const i=(vi+d*o+images.length)%images.length;
-      if(images[i]&&!preloaded[images[i].path]){
-        preloaded[images[i].path]=await api.imageUrl(images[i].path);
-      }
+  for(let o=1;o<=2;o++){
+    for(const d of [1,-1]){
+      const i=((vi+d*o)%images.length+images.length)%images.length;
+      const im=images[i]; if(!im)continue;
+      if(!preloaded[im.path]) preloaded[im.path]=await api.imageUrl(im.path);
+      try{ const w=new Image(); w.decoding='async'; w.src=preloaded[im.path]; }catch{} // warm Chromium's decode cache
     }
   }
 }
-
-async function jumpTo(i){ vi=i; zoom=1; await showCur(); preloadNear(); }
 
 function updUI(){
   const img=images[vi]; if(!img)return;
@@ -317,7 +333,7 @@ function zIn(){ zoom=Math.min(zoom+.25,5); apZ(); }
 function zOut(){ zoom=Math.max(zoom-.25,.25); apZ(); }
 function apZ(){ const act=useA?imgA:imgB; if(act) act.style.transform=`scale(${zoom})`; document.getElementById('zl').textContent=Math.round(zoom*100)+'%'; }
 
-function toGallery(){ mode='gallery'; document.getElementById('gallery').style.display=''; document.getElementById('viewer').className='viewer'; renderBar(); updStat(); }
+function toGallery(){ mode='gallery'; chromeHidden=false; clearTimeout(idleTmr); document.getElementById('gallery').style.display=''; document.getElementById('viewer').className='viewer'; renderBar(); updStat(); }
 async function changeFolder(){ const f=await api.pickFolder(); if(f){ curFolder=f; preloaded={}; thumbUrls={}; images=await api.listImages(curFolder); renderGallery(); renderBar(); updStat(); updTitle(); } }
 async function doRefresh(){ preloaded={}; thumbUrls={}; images=await api.listImages(curFolder); renderGallery(); updStat(); }
 
@@ -346,15 +362,24 @@ document.addEventListener('drop', async e => {
 // ═══ KEYBOARD ═══
 document.addEventListener('keydown', e => {
   if(mode==='viewer'){
-    if(e.key==='ArrowRight') goNext();
-    if(e.key==='ArrowLeft') goPrev();
-    if(e.key==='Escape') toGallery();
-    if(e.key==='+'||e.key==='=') zIn();
-    if(e.key==='-') zOut();
-    if(e.key==='0'){ zoom=1; apZ(); }
-    if(e.key==='i'){ infoOn=!infoOn; updUI(); }
+    if(e.key==='ArrowRight'||e.key==='ArrowDown'){ e.preventDefault(); goNext(); }
+    else if(e.key==='ArrowLeft'||e.key==='ArrowUp'){ e.preventDefault(); goPrev(); }
+    else if(e.key==='Escape'){ if(chromeHidden) showChrome(); else toGallery(); }
+    else if(e.key===' '){ e.preventDefault(); goNext(); }
+    else if(e.key==='+'||e.key==='='){ zIn(); }
+    else if(e.key==='-'||e.key==='_'){ zOut(); }
+    else if(e.key==='0'){ zoom=1; apZ(); }
+    else if(e.key==='f'||e.key==='F'){ toggleFilm(); }
+    else if(e.key==='i'||e.key==='I'){ infoOn=!infoOn; updUI(); }
+    else if(e.key==='F11'){ e.preventDefault(); api.winMax(); }
   }
 });
+// Mouse wheel = zoom in/out (like Windows Photos). Use the arrows/chevrons to change image.
+document.addEventListener('wheel', e => {
+  if(mode!=='viewer') return;
+  e.preventDefault();
+  (e.deltaY<0 ? zIn : zOut)();
+}, { passive:false });
 
 function fmt(b){if(!b)return'—';if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';if(b<1073741824)return(b/1048576).toFixed(1)+' MB';return(b/1073741824).toFixed(1)+' GB'}
 function fmtDate(d){const now=new Date().toISOString().split('T')[0];if(d===now)return'Today';const y=new Date(Date.now()-864e5).toISOString().split('T')[0];if(d===y)return'Yesterday';return new Date(d+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}
