@@ -44,6 +44,20 @@ drag code paths only execute on Linux. Run through this on your home PC after
       come into view (~400px before). RAM stays bounded.
 - [ ] Selection, rubber-band drag-select, and Ctrl+A still work across the folder.
 
+## 6. Split view (v1.6 — verified structurally in a browser, confirm UX on Linux)
+- [ ] Click **⊟⊟ Split** in the toolbar → a second pane opens on the right at Home; the focused
+      pane has an accent left-border and each pane shows its folder path in a slim header.
+- [ ] Click a tab → it loads into the **focused** pane. Click/F6 to switch which pane is focused;
+      the toolbar, address bar, and sidebar follow the focused pane.
+- [ ] Each pane navigates independently (double-click folders in either) and can have its own
+      sort/view mode.
+- [ ] **Drag a file from one pane onto the other pane** (empty area → its folder; onto a folder tile
+      → into it). Move by default, Ctrl = copy.
+- [ ] **Copy in pane A (Ctrl+C), focus pane B, paste (Ctrl+V)** → file lands in pane B's folder.
+      Same for Cut (Ctrl+X).
+- [ ] Click **⊟⊟ Split** again → collapses back to a single pane; the other tab stays in the tab bar.
+- [ ] Relaunch → split state and both panes' folders are restored.
+
 ## If something regresses
 The changes are grouped by area (history, SMB, clipboard, drag, render). The drag rework in
 `explorer.html` is the riskiest piece and is self-contained in the "INTERNAL DRAG" section — if it

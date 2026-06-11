@@ -17,6 +17,7 @@ select{font-family:inherit;color:var(--tx);background:var(--ib);border:1px solid
 .wb{display:flex;-webkit-app-region:no-drag}.wb button{width:46px;height:32px;font-size:11px;display:flex;align-items:center;justify-content:center;transition:background .08s}.wb button:hover{background:var(--h2)}.wb .cl:hover{background:var(--cr);color:#fff}
 .tabbar{height:36px;background:var(--tbg);display:flex;align-items:flex-end;padding:0 8px;gap:1px;border-bottom:1px solid var(--bd);flex-shrink:0;overflow-x:auto}
 .tab{height:30px;padding:0 14px;display:flex;align-items:center;gap:8px;border-radius:8px 8px 0 0;font-size:12px;cursor:pointer;background:transparent;color:var(--t2);max-width:200px;flex-shrink:0}.tab:hover{background:var(--hv)}.tab.a{background:var(--sf);color:var(--tx);font-weight:600}
+.tab.other{box-shadow:inset 0 -2px 0 var(--abd)}
 .tab .tc{width:18px;height:18px;border-radius:4px;font-size:10px;display:flex;align-items:center;justify-content:center;opacity:0}.tab:hover .tc{opacity:.6}.tab .tc:hover{opacity:1;background:rgba(128,128,128,.2)}
 .tn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px}
 .tadd{width:30px;height:28px;border-radius:6px;font-size:16px;display:flex;align-items:center;justify-content:center;color:var(--t3);align-self:center;flex-shrink:0}.tadd:hover{background:var(--hv)}
@@ -37,6 +38,14 @@ select{font-family:inherit;color:var(--tx);background:var(--ib);border:1px solid
 .si{padding:4px 14px;display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;border-radius:4px;margin:1px 6px}.si:hover{background:var(--hv)}.si.a{background:var(--abg);color:var(--ac);font-weight:600}
 .si .ico{font-size:14px;width:18px;text-align:center}
 .si .rm{opacity:0;font-size:11px;margin-left:auto;width:18px;height:18px;border-radius:3px;display:flex;align-items:center;justify-content:center}.si:hover .rm{opacity:.5}.si .rm:hover{opacity:1;background:var(--h2)}
+/* SPLIT VIEW — panes container holds 1 or 2 panes side by side */
+.panes{flex:1;display:flex;overflow:hidden}
+.pane{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;border-left:2px solid transparent}
+.panes.split .pane+.pane{border-left:1px solid var(--bd)}
+.panes.split .pane.focused{border-left:2px solid var(--ac)}
+.pane-hdr{height:22px;display:none;align-items:center;padding:0 10px;font-size:11px;color:var(--t3);background:var(--tb);border-bottom:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0}
+.panes.split .pane-hdr{display:flex}
+.panes.split .pane.focused .pane-hdr{color:var(--ac);font-weight:600}
 .content{flex:1;overflow-y:auto;padding:12px;background:var(--sf);position:relative}
 .group-hdr{font-size:12px;font-weight:600;color:var(--t3);padding:8px 4px 4px;border-bottom:1px solid var(--bd);margin:8px 0 4px;text-transform:uppercase;letter-spacing:.3px}
 /* GRID — icon sizes via CSS vars */
@@ -92,7 +101,7 @@ select{font-family:inherit;color:var(--tx);background:var(--ib);border:1px solid
   <div class="tabbar" id="tabbar"></div>
   <div class="toolbar" id="toolbar"></div>
   <div class="abar" id="abar"></div>
-  <div class="body"><div class="sidebar" id="sidebar"></div><div class="content sz-md" id="content"></div></div>
+  <div class="body"><div class="sidebar" id="sidebar"></div><div class="panes" id="panes"></div></div>
   <div class="statusbar"><span id="status"></span><span style="margin-left:auto;display:flex;gap:12px" id="resmon"></span></div>
 </div>
 <div class="ctx" id="ctx" style="display:none"></div>
@@ -102,20 +111,28 @@ select{font-family:inherit;color:var(--tx);background:var(--ib);border:1px solid
 <script>
 function natCmp(a,b){return a.localeCompare(b,undefined,{numeric:true,sensitivity:'base'})}
 
-let tabs=[],atid=null,vm='grid',qp={},bm={favourites:[],bookmarks:[]},settings={theme:'light'},sortPrefs={},netLoc={locations:[]},tc=0;
-let sortBy='name',sortAsc=true,groupBy='none';
+let tabs=[],qp={},bm={favourites:[],bookmarks:[]},settings={theme:'light'},sortPrefs={},netLoc={locations:[]},tc=0;
 let iconSize='md';
 let memory={version:1,favourites:[],bookmarks:[],pinnedFolders:[],cachedFolders:[],recentPaths:[]};
-// Renderer-side thumb cache (URL strings). Persists within session.
+// Renderer-side thumb cache (URL strings). Persists within session. Shared across panes.
 let thumbCache={};
 let thumbAbort=0;
-// Direct reference map rebuilt after every buildContent
-let imgElementMap=new Map();
+
+// ══════════════ SPLIT VIEW — 1 or 2 panes sharing the tab pool ══════════════
+// Each pane owns its DOM (.content div + header), its own IntersectionObserver and thumb map,
+// and points at one tab. The focused pane is what the toolbar/keyboard/clipboard act on.
+let panes=[];          // [{tabId, el, hdrEl, io, imgMap, pending:Set, flushTmr}]
+let focusedPaneIdx=0;
+let splitOn=false;
+function focusedPane(){return panes[focusedPaneIdx]||panes[0]}
+function tabOfPane(pane){return pane?tabs.find(t=>t.id===pane.tabId):undefined}
+function paneOfEl(el){return panes.find(p=>el&&p.wrap.contains(el))}
+function paneIndexOfEl(el){return panes.findIndex(p=>el&&p.wrap.contains(el))}
 
 const ICONS={folder:'📁',txt:'📄',pdf:'📕',doc:'📘',docx:'📘',xls:'📊',xlsx:'📊',csv:'📊',zip:'📦',gz:'📦',tar:'📦','7z':'📦',rar:'📦',deb:'📀',rpm:'📀',appimage:'📀',mp3:'🎵',wav:'🎵',flac:'🎵',ogg:'🎵',aac:'🎵',mp4:'🎬',avi:'🎬',mkv:'🎬',mov:'🎬',webm:'🎬',flv:'🎬',wmv:'🎬',py:'🐍',js:'📜',ts:'📜',html:'🌐',css:'🎨',json:'📋',xml:'📋',md:'📝',sh:'⚙️',conf:'⚙️',log:'📋',default:'📄'};
 function ico(e){return e.isDirectory?ICONS.folder:e.isVideo?'🎬':(ICONS[e.ext]||ICONS.default)}
 function fmt(b){if(!b)return'—';if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';if(b<1073741824)return(b/1048576).toFixed(1)+' MB';return(b/1073741824).toFixed(1)+' GB'}
-function ct(){return tabs.find(t=>t.id===atid)}
+function ct(){return tabOfPane(focusedPane())}
 function esc(s){return s.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
 function escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}
 function fileCategory(e){if(e.isDirectory)return'📁 Folders';if(e.isImage)return'🖼️ Images';if(e.isVideo)return'🎬 Videos';const d=new Set(['txt','pdf','doc','docx','xls','xlsx','csv','md','json','xml','yaml','yml','html','css']);if(d.has(e.ext))return'📄 Documents';return'📎 Other'}
@@ -139,43 +156,143 @@ async function init(){
   const session=await api.sessionLoad();
   applyTheme();
   iconSize=settings.iconSize||'md';
-  document.getElementById('content').className='content sz-'+iconSize;
 
-  if(session&&session.tabs&&session.tabs.length){
-    for(const tp of session.tabs) addTab(tp);
-  } else {
-    addTab(qp.home);
+  // Create the tab objects to restore
+  const restorePaths=(session&&session.tabs&&session.tabs.length)?session.tabs:[qp.home];
+  const ids=restorePaths.map(tp=>newTab(tp));
+
+  // Pane 0 (always present)
+  const p0tab=ids[(session&&session.panes&&session.panes[0])||0]||ids[0];
+  createPane(p0tab);
+  setFocus(0);
+  await loadPane(0);
+
+  // Restore split (pane 1) if it was on
+  if(session&&session.split){
+    splitOn=true;
+    document.getElementById('panes').classList.add('split');
+    let p1tab=(session.panes&&ids[session.panes[1]])||null;
+    if(!p1tab||p1tab===p0tab) p1tab=newTab(qp.home);
+    createPane(p1tab);
+    await loadPane(1);
   }
+  renderTabs();renderTB();
 }
 function applyTheme(){document.body.className=settings.theme==='dark'?'dark':''}
+
+function sessionData(){return {tabs:tabs.map(t=>t.path),split:splitOn,panes:panes.map(p=>tabs.findIndex(t=>t.id===p.tabId))};}
+async function saveSession(){try{await api.sessionSave(sessionData());}catch{}}
 
 async function clearSession(){
   if(!confirm('Clear session history and start fresh?\nAll tabs will close and Home will open.'))return;
   await api.sessionSave(null);
-  tabs=[];tc=0;atid=null;addTab(qp.home);
+  for(const p of panes){if(p.io)p.io.disconnect();p.wrap.remove();}
+  tabs=[];tc=0;panes=[];focusedPaneIdx=0;splitOn=false;
+  document.getElementById('panes').classList.remove('split');
+  const id=newTab(qp.home);createPane(id);setFocus(0);await loadPane(0);renderTabs();renderTB();
 }
 
 // Save session on close
-async function doClose(){
-  const sessionData={tabs:tabs.map(t=>t.path)};
-  await api.sessionSave(sessionData);
-  api.winClose();
+async function doClose(){ await saveSession(); api.winClose(); }
+
+// ═══ TABS + PANES ═══
+// newTab creates a tab object (folder + history + per-tab view state) without attaching it to a pane.
+function newTab(p){const id=++tc;const t={id,path:p,hist:[p],hi:0,entries:[],filtered:[],sel:new Set(),search:'',scrollPos:{},vm:'grid',sortBy:'name',sortAsc:true,groupBy:'none'};tabs.push(t);loadFolderSort(t);return id}
+// addTab creates a tab AND shows it in the focused pane (used by "+", new-tab, etc.)
+function addTab(p){const id=newTab(p);assignTabToPane(focusedPaneIdx,id);}
+function closeTab(id){
+  const minTabs=splitOn?2:1; if(tabs.length<=minTabs)return;
+  const i=tabs.findIndex(t=>t.id===id); if(i<0)return;
+  tabs.splice(i,1);
+  for(let pi=0;pi<panes.length;pi++){
+    if(panes[pi].tabId===id){
+      const fallback=tabs.find(t=>!panes.some((p,j)=>j!==pi&&p.tabId===t.id))||tabs[0];
+      panes[pi].tabId=fallback.id; loadPane(pi);
+    }
+  }
+  renderTabs();
+}
+// Clicking a tab loads it into the FOCUSED pane.
+function switchTab(id){assignTabToPane(focusedPaneIdx,id);}
+function renderTabs(){
+  const b=document.getElementById('tabbar');
+  const fId=focusedPane()?.tabId;
+  const oId=splitOn?panes.find((p,i)=>i!==focusedPaneIdx)?.tabId:null;
+  const minTabs=splitOn?2:1;
+  let h='';
+  for(const t of tabs){
+    const n=t.path.split('/').filter(Boolean).pop()||'/';
+    const cls='tab'+(t.id===fId?' a':'')+(t.id===oId?' other':'');
+    h+=`<div class="${cls}" onclick="switchTab(${t.id})" title="${t.path}"><span class="tn">${n}</span>${tabs.length>minTabs?`<span class="tc" onclick="event.stopPropagation();closeTab(${t.id})">✕</span>`:''}</div>`;
+  }
+  h+=`<button class="tadd" onclick="addTab(ct().path)">+</button>`;
+  b.innerHTML=h;
 }
 
-// ═══ TABS ═══
-function addTab(p){const id=++tc;tabs.push({id,path:p,hist:[p],hi:0,entries:[],filtered:[],sel:new Set(),search:'',scroll:0,scrollPos:{}});switchTab(id)}
-function closeTab(id){if(tabs.length<=1)return;const i=tabs.findIndex(t=>t.id===id);tabs.splice(i,1);if(atid===id)switchTab(tabs[Math.min(i,tabs.length-1)].id);else renderTabs()}
-function switchTab(id){const p=ct();if(p){if(!p.scrollPos)p.scrollPos={};p.scrollPos[p.path]=document.getElementById('content').scrollTop;}atid=id;renderTabs();nav(ct().path,false,false)}
-function renderTabs(){const b=document.getElementById('tabbar');let h='';for(const t of tabs){const n=t.path.split('/').filter(Boolean).pop()||'/';h+=`<div class="tab${t.id===atid?' a':''}" onclick="switchTab(${t.id})" title="${t.path}"><span class="tn">${n}</span>${tabs.length>1?`<span class="tc" onclick="event.stopPropagation();closeTab(${t.id})">✕</span>`:''}</div>`}h+=`<button class="tadd" onclick="addTab(ct().path)">+</button>`;b.innerHTML=h}
+// ── Pane management ──
+function makePaneEl(){
+  const wrap=document.createElement('div');wrap.className='pane';
+  const hdr=document.createElement('div');hdr.className='pane-hdr';
+  const content=document.createElement('div');content.className='content sz-'+iconSize;
+  wrap.appendChild(hdr);wrap.appendChild(content);
+  return {wrap,hdr,content};
+}
+function createPane(tabId){
+  const {wrap,hdr,content}=makePaneEl();
+  document.getElementById('panes').appendChild(wrap);
+  const pane={tabId,el:content,hdrEl:hdr,wrap,io:null,imgMap:new Map(),pending:new Set(),flushTmr:null};
+  wirePane(pane);
+  panes.push(pane);
+  return pane;
+}
+function setFocus(idx){
+  if(idx<0||idx>=panes.length)return;
+  focusedPaneIdx=idx;
+  panes.forEach((p,i)=>p.wrap.classList.toggle('focused',i===focusedPaneIdx));
+  renderTabs();renderABar();renderSB();renderTB();updTitle();updStat();
+}
+function renderPaneHdrs(){for(const p of panes){const t=tabOfPane(p);if(t)p.hdrEl.textContent=t.path;}}
+// Show an existing tab in a pane (with swap if it's already shown in the other pane).
+async function assignTabToPane(paneIdx,tabId){
+  const pane=panes[paneIdx]; if(!pane)return;
+  const cur=pane.tabId;
+  const leaving=tabs.find(t=>t.id===cur);
+  if(leaving){if(!leaving.scrollPos)leaving.scrollPos={};leaving.scrollPos[leaving.path]=pane.el.scrollTop;}
+  const otherIdx=panes.findIndex((p,i)=>i!==paneIdx&&p.tabId===tabId);
+  pane.tabId=tabId;
+  if(otherIdx>=0){panes[otherIdx].tabId=cur;await loadPane(otherIdx);}
+  await loadPane(paneIdx);
+  if(paneIdx!==focusedPaneIdx)setFocus(paneIdx);
+  else {renderTabs();renderABar();renderSB();renderTB();updTitle();}
+}
+function toggleSplit(){
+  if(splitOn){
+    const rm=panes.pop();
+    if(rm){if(rm.io)rm.io.disconnect();rm.wrap.remove();}
+    splitOn=false;focusedPaneIdx=0;
+    document.getElementById('panes').classList.remove('split');
+    setFocus(0);
+  } else {
+    splitOn=true;
+    document.getElementById('panes').classList.add('split');
+    const id=newTab(qp.home);
+    createPane(id);
+    loadPane(panes.length-1);
+    setFocus(panes.length-1);
+  }
+  renderTB();renderPaneHdrs();saveSession();
+}
 
 function renderTB(){
-  const ar=sortAsc?'▲':'▼';
+  const t=ct()||{vm:'grid',sortBy:'name',sortAsc:true,groupBy:'none'};
+  const ar=t.sortAsc?'▲':'▼';
   document.getElementById('toolbar').innerHTML=`
     <button class="tb" onclick="newFolder()">📁 New</button><div class="sp"></div>
     <button class="tb" onclick="cutSel()">✂️</button><button class="tb" onclick="copySel()">📋</button><button class="tb" onclick="pasteHere()">📄 Paste</button>
     <button class="tb" onclick="renameSel()">✏️</button><button class="tb" onclick="deleteSel()">🗑️</button><div class="sp"></div>
     <button class="tb" onclick="api.openTerminal(ct().path)">🖥️</button>
-    <button class="tb" onclick="openPhotosGallery()">🖼️ Photos</button><div style="flex:1"></div>
+    <button class="tb" onclick="openPhotosGallery()">🖼️ Photos</button>
+    <button class="tb${splitOn?' a':''}" onclick="toggleSplit()" title="Split view (two panes side by side)">⊟⊟ Split</button><div style="flex:1"></div>
     <select onchange="setIconSize(this.value)" title="Icon size">
       <option value="sm"${iconSize==='sm'?' selected':''}>Small</option>
       <option value="md"${iconSize==='md'?' selected':''}>Medium</option>
@@ -183,11 +300,11 @@ function renderTB(){
       <option value="xl"${iconSize==='xl'?' selected':''}>Extra Large</option>
     </select>
     <div class="sp"></div>
-    <select onchange="sortBy=this.value;doSort()"><option value="name"${sortBy==='name'?' selected':''}>Name</option><option value="modified"${sortBy==='modified'?' selected':''}>Date Modified</option><option value="created"${sortBy==='created'?' selected':''}>Date Created</option><option value="size"${sortBy==='size'?' selected':''}>Size</option><option value="type"${sortBy==='type'?' selected':''}>Type</option><option value="ext"${sortBy==='ext'?' selected':''}>Extension</option></select>
-    <button class="tb" onclick="sortAsc=!sortAsc;doSort()">${ar}</button>
-    <select onchange="groupBy=this.value;doSort()"><option value="none"${groupBy==='none'?' selected':''}>No group</option><option value="type"${groupBy==='type'?' selected':''}>Group: Type</option><option value="date"${groupBy==='date'?' selected':''}>Group: Date</option></select>
+    <select onchange="ct().sortBy=this.value;doSort()"><option value="name"${t.sortBy==='name'?' selected':''}>Name</option><option value="modified"${t.sortBy==='modified'?' selected':''}>Date Modified</option><option value="created"${t.sortBy==='created'?' selected':''}>Date Created</option><option value="size"${t.sortBy==='size'?' selected':''}>Size</option><option value="type"${t.sortBy==='type'?' selected':''}>Type</option><option value="ext"${t.sortBy==='ext'?' selected':''}>Extension</option></select>
+    <button class="tb" onclick="ct().sortAsc=!ct().sortAsc;doSort()">${ar}</button>
+    <select onchange="ct().groupBy=this.value;doSort()"><option value="none"${t.groupBy==='none'?' selected':''}>No group</option><option value="type"${t.groupBy==='type'?' selected':''}>Group: Type</option><option value="date"${t.groupBy==='date'?' selected':''}>Group: Date</option></select>
     <div class="sp"></div>
-    <div class="vt"><button class="${vm==='grid'?'a':''}" onclick="setVM('grid')">⊞</button><button class="${vm==='list'?'a':''}" onclick="setVM('list')">☰</button><button class="${vm==='tiles'?'a':''}" onclick="setVM('tiles')">⊟</button></div>
+    <div class="vt"><button class="${t.vm==='grid'?'a':''}" onclick="setVM('grid')">⊞</button><button class="${t.vm==='list'?'a':''}" onclick="setVM('list')">☰</button><button class="${t.vm==='tiles'?'a':''}" onclick="setVM('tiles')">⊟</button></div>
     <div class="sp"></div>
     <button class="tb" onclick="clearSession()" title="Clear history & fresh start">🧹</button>
     <button class="tb" onclick="toggleCacheFolder()" title="Toggle persistent thumb cache for this folder">${isFolderCached()?'📌 Cached':'📌 Cache'}</button>
@@ -207,46 +324,52 @@ async function toggleCacheFolder(){
     if(r.ok)renderTB();
   }
 }
-function setIconSize(sz){iconSize=sz;const el=document.getElementById('content');el.className='content sz-'+sz;settings.iconSize=sz;api.saveCfg('settings',settings)}
+function setIconSize(sz){iconSize=sz;for(const p of panes)p.el.className='content sz-'+sz;settings.iconSize=sz;api.saveCfg('settings',settings)}
 
-// ═══ SORT ═══
-function doSort(){sortEnt();filterEnt();renderTB();sortPrefs[ct().path]={sortBy,sortAsc,groupBy};api.saveCfg('sortprefs',sortPrefs)}
-function loadFolderSort(dir){const p=sortPrefs[dir];if(p){sortBy=p.sortBy||'name';sortAsc=p.sortAsc!==undefined?p.sortAsc:true;groupBy=p.groupBy||'none'}else{const nm=dir.split('/').pop()?.toLowerCase()||'';if(nm==='pictures'||nm==='photos'){sortBy='modified';sortAsc=false}else if(nm==='downloads'){sortBy='modified';sortAsc=false}else{sortBy='name';sortAsc=true}groupBy='none'}}
-function sortEnt(){ct().entries.sort((a,b)=>{if(a.isDirectory!==b.isDirectory)return a.isDirectory?-1:1;let c=0;switch(sortBy){case'name':c=natCmp(a.name,b.name);break;case'modified':c=a.modifiedMs-b.modifiedMs;break;case'created':c=a.createdMs-b.createdMs;break;case'size':c=a.size-b.size;break;case'type':c=fileCategory(a).localeCompare(fileCategory(b))||natCmp(a.name,b.name);break;case'ext':c=(a.ext||'zzz').localeCompare(b.ext||'zzz')||natCmp(a.name,b.name);break;default:c=natCmp(a.name,b.name)}return sortAsc?c:-c})}
-function filterEnt(){const t=ct(),q=t.search.toLowerCase();t.filtered=q?t.entries.filter(e=>e.name.toLowerCase().includes(q)):[...t.entries];buildContent()}
+// ═══ SORT (per-tab) ═══
+function doSort(){const t=ct();sortEnt(t);filterEnt(focusedPane());renderTB();sortPrefs[t.path]={sortBy:t.sortBy,sortAsc:t.sortAsc,groupBy:t.groupBy};api.saveCfg('sortprefs',sortPrefs)}
+function loadFolderSort(t){const dir=t.path;const p=sortPrefs[dir];if(p){t.sortBy=p.sortBy||'name';t.sortAsc=p.sortAsc!==undefined?p.sortAsc:true;t.groupBy=p.groupBy||'none'}else{const nm=dir.split('/').pop()?.toLowerCase()||'';if(nm==='pictures'||nm==='photos'){t.sortBy='modified';t.sortAsc=false}else if(nm==='downloads'){t.sortBy='modified';t.sortAsc=false}else{t.sortBy='name';t.sortAsc=true}t.groupBy='none'}}
+function sortEnt(t){t=t||ct();const sb=t.sortBy,asc=t.sortAsc;t.entries.sort((a,b)=>{if(a.isDirectory!==b.isDirectory)return a.isDirectory?-1:1;let c=0;switch(sb){case'name':c=natCmp(a.name,b.name);break;case'modified':c=a.modifiedMs-b.modifiedMs;break;case'created':c=a.createdMs-b.createdMs;break;case'size':c=a.size-b.size;break;case'type':c=fileCategory(a).localeCompare(fileCategory(b))||natCmp(a.name,b.name);break;case'ext':c=(a.ext||'zzz').localeCompare(b.ext||'zzz')||natCmp(a.name,b.name);break;default:c=natCmp(a.name,b.name)}return asc?c:-c})}
+function filterEnt(pane){pane=pane||focusedPane();const t=tabOfPane(pane);if(!t)return;const q=(t.search||'').toLowerCase();t.filtered=q?t.entries.filter(e=>e.name.toLowerCase().includes(q)):[...t.entries];buildContent(pane)}
 
-// ═══ NAV ═══
-async function nav(dir,addH=true,saveScroll=true){
-  const t=ct();
-  // Remember where we were scrolled in the folder we're leaving (per-folder, restored on Back).
-  // Skipped on tab switches — switchTab already saved the outgoing tab's scroll itself.
-  const cEl=document.getElementById('content');
+// ═══ NAV (pane-aware) ═══
+// nav() operates on the focused pane (keeps the signature used by inline onclick handlers).
+function nav(dir,addH=true,saveScroll=true){return navPane(focusedPaneIdx,dir,addH,saveScroll);}
+async function navPane(paneIdx,dir,addH=true,saveScroll=true){
+  const pane=panes[paneIdx];const t=tabOfPane(pane);if(!t)return;
+  // Remember scroll of the folder we're leaving (per-folder, restored on Back).
   if(!t.scrollPos)t.scrollPos={};
-  if(saveScroll&&t.path)t.scrollPos[t.path]=cEl.scrollTop;
+  if(saveScroll&&t.path)t.scrollPos[t.path]=pane.el.scrollTop;
   if(addH){
     // Don't push a duplicate of where we already are — that's what made Back "do nothing".
-    if(t.hist[t.hi]!==dir){
-      t.hist=t.hist.slice(0,t.hi+1);
-      t.hist.push(dir);
-      t.hi=t.hist.length-1;
-    }
+    if(t.hist[t.hi]!==dir){ t.hist=t.hist.slice(0,t.hi+1); t.hist.push(dir); t.hi=t.hist.length-1; }
   }
   t.path=dir;t.sel=new Set();t.search='';t._restoreScroll=true;
-  loadFolderSort(dir);renderTabs();renderABar();renderSB();renderTB();updTitle();await loadDir();
+  loadFolderSort(t);
+  renderTabs();renderPaneHdrs();
+  if(paneIdx===focusedPaneIdx){renderABar();renderSB();renderTB();updTitle();}
+  await loadDirInto(pane);
 }
-async function loadDir(){
-  const t=ct(),el=document.getElementById('content');
+// loadPane re-renders a pane at its tab's current path WITHOUT touching history (tab switch / split).
+async function loadPane(paneIdx){
+  const pane=panes[paneIdx];const t=tabOfPane(pane);if(!t)return;
+  t._restoreScroll=true;
+  renderTabs();renderPaneHdrs();
+  if(paneIdx===focusedPaneIdx){renderABar();renderSB();renderTB();updTitle();}
+  await loadDirInto(pane);
+}
+function loadDir(){return loadDirInto(focusedPane());}
+async function loadDirInto(pane){
+  const t=tabOfPane(pane);if(!t)return;const el=pane.el;
   el.innerHTML='<div class="loading">Loading...</div>';
   thumbAbort++;
   await api.cancelThumbBatch(); // Kill any running batch immediately
 
-  // First try: get count to check if huge folder
   const r=await api.readdirPaged(t.path, 0, 500);
   if(!r.ok){el.innerHTML=`<div class="empty"><div class="big">⚠️</div><div>${r.error}</div></div>`;return}
 
   t.entries=r.entries;
 
-  // If folder has more than 500 items, load the rest in background
   if(r.hasMore){
     let offset=500;
     const loadMore=async()=>{
@@ -254,18 +377,16 @@ async function loadDir(){
       if(r2.ok&&r2.entries.length){
         t.entries=t.entries.concat(r2.entries);
         offset+=500;
-        if(r2.hasMore) setTimeout(loadMore, 50); // yield between batches
-        else { sortEnt(); filterEnt(); } // final sort+render
+        if(r2.hasMore) setTimeout(loadMore, 50);
+        else { sortEnt(t); filterEnt(pane); }
       }
     };
-    // Sort and show what we have now, load rest in background
-    sortEnt(); filterEnt();
+    sortEnt(t); filterEnt(pane);
     setTimeout(loadMore, 100);
   } else {
-    sortEnt(); filterEnt();
+    sortEnt(t); filterEnt(pane);
   }
 
-  // If this is a cached folder, sync for new files
   if(memory.cachedFolders&&memory.cachedFolders.includes(t.path)){
     api.memorySyncFolder(t.path);
   }
@@ -276,24 +397,25 @@ function renderABar(){const t=ct(),parts=t.path.split('/').filter(Boolean);let p
 function renderSB(){const t=ct(),sb=document.getElementById('sidebar');const quick=[{n:'Home',i:'🏠',p:qp.home},{n:'Desktop',i:'🖥️',p:qp.desktop},{n:'Documents',i:'📄',p:qp.documents},{n:'Downloads',i:'⬇️',p:qp.downloads},{n:'Music',i:'🎵',p:qp.music},{n:'Pictures',i:'🖼️',p:qp.pictures},{n:'Videos',i:'🎬',p:qp.videos},{n:'Trash',i:'🗑️',p:qp.trash}];let h='<div class="st">Quick Access</div>';for(const q of quick)h+=`<div class="si${t.path===q.p?' a':''}" onclick="nav('${esc(q.p)}')"><span class="ico">${q.i}</span>${q.n}</div>`;h+='<div class="st">Favourites <button onclick="addFav()">+</button></div>';for(let i=0;i<bm.favourites.length;i++){const f=bm.favourites[i],n=f.split('/').filter(Boolean).pop()||'/';h+=`<div class="si${t.path===f?' a':''}" onclick="nav('${esc(f)}')"><span class="ico">⭐</span>${n}<span class="rm" onclick="event.stopPropagation();rmFav(${i})">✕</span></div>`}h+='<div class="st">Bookmarks <button onclick="addBm()">+</button></div>';for(let i=0;i<bm.bookmarks.length;i++){const b2=bm.bookmarks[i],n=b2.split('/').filter(Boolean).pop()||'/';h+=`<div class="si${t.path===b2?' a':''}" onclick="nav('${esc(b2)}')"><span class="ico">🔖</span>${n}<span class="rm" onclick="event.stopPropagation();rmBmk(${i})">✕</span></div>`}h+='<div class="st">Network <button onclick="showNetDlg()">+</button></div>';for(let i=0;i<netLoc.locations.length;i++){const nl=netLoc.locations[i];h+=`<div class="si" onclick="mountNet(${i})"><span class="ico">🌐</span>${nl.name||nl.host}<span class="rm" onclick="event.stopPropagation();rmNet(${i})">✕</span></div>`}h+='<div class="st" style="margin-top:8px">System</div>';h+=`<div class="si" onclick="nav('/')"><span class="ico">💻</span>Root (/)</div>`;sb.innerHTML=h}
 
 // ═══ BUILD CONTENT — builds DOM once, then thumbs load into existing elements ═══
-function buildContent(){
-  const t=ct(),el=document.getElementById('content');
-  if(!t.filtered.length){el.innerHTML='<div class="empty"><div class="big">📂</div><div>This folder is empty</div></div>';updStat();return}
+function buildContent(pane){
+  pane=pane||focusedPane();const t=tabOfPane(pane),el=pane.el;if(!t)return;
+  const isFocused=(pane===focusedPane());
+  if(!t.filtered.length){el.innerHTML='<div class="empty"><div class="big">📂</div><div>This folder is empty</div></div>';pane.imgMap=new Map();if(isFocused)updStat();return}
 
   // Group
   let groups;
-  if(groupBy==='type'){groups={};for(const e of t.filtered){const c=fileCategory(e);if(!groups[c])groups[c]=[];groups[c].push(e)}}
-  else if(groupBy==='date'){groups={};for(const e of t.filtered){const d=e.modified||'Unknown';if(!groups[d])groups[d]=[];groups[d].push(e)}}
+  if(t.groupBy==='type'){groups={};for(const e of t.filtered){const c=fileCategory(e);if(!groups[c])groups[c]=[];groups[c].push(e)}}
+  else if(t.groupBy==='date'){groups={};for(const e of t.filtered){const d=e.modified||'Unknown';if(!groups[d])groups[d]=[];groups[d].push(e)}}
   else groups={'':t.filtered};
 
   let html='';
   for(const[gn,items]of Object.entries(groups)){
     if(gn)html+=`<div class="group-hdr">${gn}</div>`;
-    if(vm==='list'){
-      const ar=col=>sortBy===col?(sortAsc?'▲':'▼'):'';
-      html+=`<div class="lh"><span class="${sortBy==='name'?'sorted':''}" onclick="setSortCol('name')">Name ${ar('name')}</span><span class="${sortBy==='size'?'sorted':''}" onclick="setSortCol('size')">Size ${ar('size')}</span><span class="${sortBy==='type'?'sorted':''}" onclick="setSortCol('type')">Type ${ar('type')}</span><span class="${sortBy==='modified'?'sorted':''}" onclick="setSortCol('modified')">Modified ${ar('modified')}</span></div>`;
+    if(t.vm==='list'){
+      const ar=col=>t.sortBy===col?(t.sortAsc?'▲':'▼'):'';
+      html+=`<div class="lh"><span class="${t.sortBy==='name'?'sorted':''}" onclick="setSortCol('name')">Name ${ar('name')}</span><span class="${t.sortBy==='size'?'sorted':''}" onclick="setSortCol('size')">Size ${ar('size')}</span><span class="${t.sortBy==='type'?'sorted':''}" onclick="setSortCol('type')">Type ${ar('type')}</span><span class="${t.sortBy==='modified'?'sorted':''}" onclick="setSortCol('modified')">Modified ${ar('modified')}</span></div>`;
     }
-    const isGrid=vm==='grid',isTile=vm==='tiles';
+    const isGrid=t.vm==='grid',isTile=t.vm==='tiles';
     if(isGrid)html+='<div class="gv">';
     if(isTile)html+='<div class="tv">';
     for(const e of items){
@@ -321,18 +443,18 @@ function buildContent(){
   }
   const prevScroll=el.scrollTop;
   el.innerHTML=html;
-  // Build direct element reference map (no CSS selector ever used for thumb assignment)
-  imgElementMap=new Map();
+  // Build this pane's direct element reference map (no CSS selector ever used for thumb assignment)
+  pane.imgMap=new Map();
   el.querySelectorAll('img[data-fpath]').forEach(imgEl=>{
     const fpath=imgEl.getAttribute('data-fpath');
-    if(fpath) imgElementMap.set(fpath,imgEl);
+    if(fpath) pane.imgMap.set(fpath,imgEl);
   });
-  updStat();
+  if(isFocused)updStat();
   // Restore the saved scroll position only on a fresh navigation; during background
   // "load more" re-renders keep wherever the user has scrolled to.
   if(t._restoreScroll){ el.scrollTop=(t.scrollPos&&t.scrollPos[t.path])||0; t._restoreScroll=false; }
   else el.scrollTop=prevScroll;
-  observeThumbs();
+  observeThumbs(pane);
 }
 
 // ═══ THUMBNAIL PIPELINE — IntersectionObserver driven ═══
@@ -341,37 +463,31 @@ function buildContent(){
 let debugLines=[];
 function dbg(obj){debugLines.push({...obj,ts:Date.now()});if(debugLines.length>500)debugLines.shift()}
 
-let thumbIO=null;
-let pendingThumbs=new Set(), thumbFlushTmr=null;
-
-function observeThumbs(){
-  const root=document.getElementById('content');
-  if(thumbIO) thumbIO.disconnect();
-  // Drop any thumbnail requests queued for the folder we just left.
-  pendingThumbs.clear(); clearTimeout(thumbFlushTmr);
-  thumbIO=new IntersectionObserver(entries=>{
+// Each pane has its own IntersectionObserver + pending set + image map (thumbCache is shared).
+function observeThumbs(pane){
+  if(pane.io) pane.io.disconnect();
+  pane.pending.clear(); clearTimeout(pane.flushTmr);
+  pane.io=new IntersectionObserver(entries=>{
     for(const en of entries){
       if(!en.isIntersecting) continue;
       const img=en.target, fp=img.getAttribute('data-fpath');
-      thumbIO.unobserve(img); // request a given thumb only once
-      if(fp && !thumbCache[fp]) pendingThumbs.add(fp);
+      pane.io.unobserve(img); // request a given thumb only once
+      if(fp && !thumbCache[fp]) pane.pending.add(fp);
       else if(fp && thumbCache[fp]) img.src=thumbCache[fp];
     }
-    scheduleThumbFlush();
-  },{root, rootMargin:'400px 0px'}); // start loading ~400px before they enter view
+    clearTimeout(pane.flushTmr); pane.flushTmr=setTimeout(()=>flushThumbs(pane), 80);
+  },{root:pane.el, rootMargin:'400px 0px'}); // start loading ~400px before they enter view
 
   // Apply already-cached thumbs instantly; observe the rest.
-  for(const[fp,img]of imgElementMap){
+  for(const[fp,img]of pane.imgMap){
     if(thumbCache[fp]) img.src=thumbCache[fp];
-    else thumbIO.observe(img);
+    else pane.io.observe(img);
   }
 }
 
-function scheduleThumbFlush(){ clearTimeout(thumbFlushTmr); thumbFlushTmr=setTimeout(flushThumbs, 80); }
-
-async function flushThumbs(){
-  if(!pendingThumbs.size) return;
-  const paths=[...pendingThumbs]; pendingThumbs.clear();
+async function flushThumbs(pane){
+  if(!pane.pending.size) return;
+  const paths=[...pane.pending]; pane.pending.clear();
 
   // Cheap pass: whatever the main process already has cached in memory.
   let mainCached={};
@@ -379,7 +495,7 @@ async function flushThumbs(){
   const need=[];
   for(const p of paths){
     const url=mainCached[p];
-    if(url){ thumbCache[p]=url; const el=imgElementMap.get(p); if(el)el.src=url; }
+    if(url){ thumbCache[p]=url; const el=pane.imgMap.get(p); if(el)el.src=url; }
     else need.push(p);
   }
   if(!need.length) return;
@@ -391,30 +507,27 @@ async function flushThumbs(){
     try{ const batchId=await api.newBatchId(); results=await api.generateThumbBatch(chunk, batchId); }catch{}
     if(!results) continue;
     for(const[p,url]of Object.entries(results)){
-      if(url){ thumbCache[p]=url; const el=imgElementMap.get(p); if(el)el.src=url; dbg({event:'thumb_assign_ok',path:p}); }
+      if(url){ thumbCache[p]=url; const el=pane.imgMap.get(p); if(el)el.src=url; dbg({event:'thumb_assign_ok',path:p}); }
     }
   }
 }
 
-// ═══ SELECTION — toggle CSS class, NO re-render ═══
+// ═══ SELECTION — toggle CSS class, NO re-render (operates on the focused pane) ═══
 function sel(ev,name){
-  const t=ct();
+  const pane=focusedPane(),t=tabOfPane(pane);if(!t)return;
   if(ev.ctrlKey){t.sel.has(name)?t.sel.delete(name):t.sel.add(name)}
   else if(ev.shiftKey){const names=t.filtered.map(e=>e.name),last=[...t.sel].pop();if(last){const a=names.indexOf(last),b=names.indexOf(name),[lo,hi]=a<b?[a,b]:[b,a];for(let i=lo;i<=hi;i++)t.sel.add(names[i])}else t.sel.add(name)}
   else t.sel=new Set([name]);
-  syncSelectionCSS();
+  syncSelectionCSS(pane);
 }
-function syncSelectionCSS(){
-  const t=ct();
-  document.querySelectorAll('.gi,.li,.ti').forEach(el=>{
+function syncSelectionCSS(pane){
+  pane=pane||focusedPane();const t=tabOfPane(pane);if(!t)return;
+  pane.el.querySelectorAll('.gi,.li,.ti').forEach(el=>{
     const name=el.getAttribute('data-name');
     if(name&&t.sel.has(name))el.classList.add('sel');else el.classList.remove('sel');
   });
-  updStat();
+  if(pane===focusedPane())updStat();
 }
-function clrSel(ev){if(ev&&ev.target!==document.getElementById('content'))return;ct().sel=new Set();syncSelectionCSS();hideCtx()}
-document.getElementById('content').addEventListener('click',e=>{if(e.target===document.getElementById('content')||e.target.closest('.gv,.tv'))if(!e.target.closest('.gi,.li,.ti')){ct().sel=new Set();syncSelectionCSS();hideCtx()}});
-
 function selAbove(){const t=ct(),names=t.filtered.map(e=>e.name),cur=[...t.sel][0];if(!cur)return;const idx=names.indexOf(cur);for(let i=0;i<=idx;i++)t.sel.add(names[i]);syncSelectionCSS()}
 function selBelow(){const t=ct(),names=t.filtered.map(e=>e.name),cur=[...t.sel].pop();if(!cur)return;const idx=names.indexOf(cur);for(let i=idx;i<names.length;i++)t.sel.add(names[i]);syncSelectionCSS()}
 
@@ -449,8 +562,8 @@ function openPhotosGallery(){api.openPhotos(ct().path,'',[])}
 function goBack(){const t=ct();if(t.hi>0){t.hi--;nav(t.hist[t.hi],false)}}
 function goFwd(){const t=ct();if(t.hi<t.hist.length-1){t.hi++;nav(t.hist[t.hi],false)}}
 function goUp(){const t=ct();if(t.path!=='/')nav(t.path.replace(/\/[^/]+\/?$/,'')||'/')}
-function setVM(m){vm=m;renderTB();buildContent()}
-function setSortCol(col){if(sortBy===col)sortAsc=!sortAsc;else{sortBy=col;sortAsc=true}doSort()}
+function setVM(m){const t=ct();if(t)t.vm=m;renderTB();buildContent(focusedPane())}
+function setSortCol(col){const t=ct();if(!t)return;if(t.sortBy===col)t.sortAsc=!t.sortAsc;else{t.sortBy=col;t.sortAsc=true}doSort()}
 async function newFolder(){const n=prompt('New folder name:');if(n){await api.mkdir(ct().path+'/'+n);await loadDir()}}
 async function renameSel(){const t=ct(),name=[...t.sel][0];if(!name)return;const e=t.entries.find(x=>x.name===name);if(!e)return;const nn=prompt('Rename to:',e.name);if(nn&&nn!==e.name){const r=await api.smartRename(e.path,nn);if(r.ok)await loadDir();else if(r.error)alert('Rename failed: '+r.error)}}
 async function deleteSel(){const t=ct();if(!t.sel.size)return;if(!confirm(`Move ${t.sel.size} item(s) to trash?`))return;for(const n of t.sel){const e=t.entries.find(x=>x.name===n);if(e)await api.trash(e.path)}t.sel=new Set();await loadDir()}
@@ -515,101 +628,112 @@ async function mountNet(i){
   else alert('Mount failed:\n\n'+r.error)
 }
 
-// ═══ DRAG & DROP ═══
+// ═══ DRAG & DROP (pane-aware) ═══
 // Resolve a dropped File to an absolute path (E28: File.path; future-proofed via preload).
 function droppedPath(f){ try{ return api.pathForFile(f); }catch{ return f&&f.path; } }
 
-// EXTERNAL drops (from Nemo, desktop, other apps) — these come through as real HTML5 drag events.
+// EXTERNAL drops (from Nemo, desktop, other apps) onto a folder tile — real HTML5 drag events.
 function dov(ev){ev.preventDefault();ev.dataTransfer.dropEffect='copy';ev.currentTarget.classList.add('dov')}
 function dlv(ev){ev.currentTarget.classList.remove('dov')}
-async function drp(ev,dest){ev.preventDefault();ev.stopPropagation();ev.currentTarget.classList.remove('dov');const files=ev.dataTransfer.files;if(files&&files.length){for(const f of files){const fp=droppedPath(f);if(fp)await api.smartCopy(fp,dest)}await loadDir()}}
-// Drop on empty content area = drop into current folder
-document.getElementById('content').addEventListener('dragover',e=>{e.preventDefault();e.dataTransfer.dropEffect='copy'});
-document.getElementById('content').addEventListener('drop',async e=>{e.preventDefault();const files=e.dataTransfer.files;if(files&&files.length){for(const f of files){const fp=droppedPath(f);if(fp)await api.smartCopy(fp,ct().path)}await loadDir()}});
-// GLOBAL GUARD: without this, dropping a file on the toolbar/sidebar/titlebar makes the
-// window navigate to file:// and blank out the app. Block the default everywhere.
+async function drp(ev,dest){ev.preventDefault();ev.stopPropagation();ev.currentTarget.classList.remove('dov');const pane=paneOfEl(ev.currentTarget);const files=ev.dataTransfer.files;if(files&&files.length){for(const f of files){const fp=droppedPath(f);if(fp)await api.smartCopy(fp,dest)}if(pane)await loadDirInto(pane);}}
+// GLOBAL GUARD: dropping a file on the toolbar/sidebar/titlebar would navigate to file:// and blank
+// the window. Block the default everywhere; real drop targets are wired per-pane in wirePane().
 window.addEventListener('dragover',e=>e.preventDefault());
 window.addEventListener('drop',e=>e.preventDefault());
 
-// ═══ INTERNAL DRAG (mouse-emulated) ═══
-// Native startDrag() hijacks the OS drag, which kills in-app HTML5 drop targets. So we emulate
-// the drag with mouse events: move files between folders WITHIN the app, and only hand off to a
-// native OS drag (startDrag) once the pointer leaves the window — that's how we drag OUT to Nemo/desktop.
-let dragState=null;
+// ── Focus follows mouse into a pane (capture phase → runs before tile onclick/ondblclick) ──
+document.getElementById('panes').addEventListener('mousedown',e=>{
+  const idx=paneIndexOfEl(e.target);
+  if(idx>=0&&idx!==focusedPaneIdx)setFocus(idx);
+},true);
+
+// ── INTERNAL DRAG (mouse-emulated): move/copy within a pane AND across panes; drag-out on exit ──
+let dragState=null, dragJustHappened=false;
 const DRAG_THRESHOLD=6;
+const rbEl=document.getElementById('rubberband');
+let rbState=null;
 function clearDropHi(){document.querySelectorAll('.gi.dov,.li.dov,.ti.dov').forEach(x=>x.classList.remove('dov'))}
 
-document.getElementById('content').addEventListener('mousedown',e=>{
-  if(e.button!==0)return;
-  const tile=e.target.closest('.gi,.li,.ti');
-  if(!tile)return;
-  dragState={srcPath:tile.getAttribute('data-path'),srcName:tile.getAttribute('data-name'),startX:e.clientX,startY:e.clientY,active:false,dropTile:null};
-});
+// Per-pane wiring: external drop, drag/rubber-band start, click (clear selection / swallow post-drag).
+function wirePane(pane){
+  const el=pane.el;
+  el.addEventListener('dragover',e=>{e.preventDefault();e.dataTransfer.dropEffect='copy'});
+  el.addEventListener('drop',async e=>{e.preventDefault();const t=tabOfPane(pane);const files=e.dataTransfer.files;if(files&&files.length&&t){for(const f of files){const fp=droppedPath(f);if(fp)await api.smartCopy(fp,t.path)}await loadDirInto(pane);}});
+  el.addEventListener('mousedown',e=>{
+    if(e.button!==0)return;
+    const tile=e.target.closest('.gi,.li,.ti');
+    if(tile){
+      dragState={srcPath:tile.getAttribute('data-path'),srcName:tile.getAttribute('data-name'),srcPaneIdx:panes.indexOf(pane),startX:e.clientX,startY:e.clientY,active:false,dropTile:null};
+    } else if(!e.target.closest('.lh,.group-hdr')){
+      rbState={paneIdx:panes.indexOf(pane),sx:e.clientX,sy:e.clientY};
+      rbEl.style.left=e.clientX+'px';rbEl.style.top=e.clientY+'px';rbEl.style.width='0';rbEl.style.height='0';rbEl.style.display='block';
+    }
+  });
+  el.addEventListener('click',e=>{
+    if(dragJustHappened){e.stopPropagation();e.preventDefault();return;}
+    if(!e.target.closest('.gi,.li,.ti')){const t=tabOfPane(pane);if(t){t.sel=new Set();syncSelectionCSS(pane);}hideCtx();}
+  },true);
+}
+
 document.addEventListener('mousemove',e=>{
-  if(!dragState)return;
-  if(!dragState.active){
-    if(Math.abs(e.clientX-dragState.startX)<DRAG_THRESHOLD&&Math.abs(e.clientY-dragState.startY)<DRAG_THRESHOLD)return;
-    dragState.active=true;document.body.style.cursor='copy';
+  // Internal drag highlight
+  if(dragState){
+    if(!dragState.active){
+      if(Math.abs(e.clientX-dragState.startX)<DRAG_THRESHOLD&&Math.abs(e.clientY-dragState.startY)<DRAG_THRESHOLD){/* not yet */}
+      else {dragState.active=true;document.body.style.cursor='copy';}
+    }
+    if(dragState.active){
+      const el=document.elementFromPoint(e.clientX,e.clientY);
+      const tile=el&&el.closest('.gi,.li,.ti');
+      clearDropHi();
+      if(tile&&tile.getAttribute('data-isdir')==='1'&&tile.getAttribute('data-path')!==dragState.srcPath){tile.classList.add('dov');dragState.dropTile=tile;}
+      else dragState.dropTile=null;
+    }
   }
-  const el=document.elementFromPoint(e.clientX,e.clientY);
-  const tile=el&&el.closest('.gi,.li,.ti');
-  clearDropHi();
-  if(tile&&tile.getAttribute('data-isdir')==='1'&&tile.getAttribute('data-path')!==dragState.srcPath){
-    tile.classList.add('dov');dragState.dropTile=tile;
-  } else dragState.dropTile=null;
+  // Rubber-band (scoped to the pane it started in)
+  if(rbState){
+    const x=Math.min(rbState.sx,e.clientX),y=Math.min(rbState.sy,e.clientY),w=Math.abs(e.clientX-rbState.sx),h=Math.abs(e.clientY-rbState.sy);
+    rbEl.style.left=x+'px';rbEl.style.top=y+'px';rbEl.style.width=w+'px';rbEl.style.height=h+'px';
+    const rect={left:x,top:y,right:x+w,bottom:y+h};
+    const pane=panes[rbState.paneIdx],t=tabOfPane(pane);if(!t)return;t.sel=new Set();
+    pane.el.querySelectorAll('.gi,.li,.ti').forEach(el=>{
+      const r=el.getBoundingClientRect();
+      if(r.left<rect.right&&r.right>rect.left&&r.top<rect.bottom&&r.bottom>rect.top){const nm=el.getAttribute('data-name');if(nm)t.sel.add(nm);el.classList.add('sel');}
+      else el.classList.remove('sel');
+    });
+    updStat();
+  }
 });
+
 document.addEventListener('mouseup',async e=>{
+  if(rbState){rbState=null;rbEl.style.display='none';}
   if(!dragState)return;
   const st=dragState;dragState=null;document.body.style.cursor='';clearDropHi();
-  if(!st.active)return; // it was a click, not a drag — let selection handle it
+  if(!st.active)return; // a click, not a drag — let selection handle it
   dragJustHappened=true;setTimeout(()=>dragJustHappened=false,0);
-  if(!st.dropTile)return;
-  const dest=st.dropTile.getAttribute('data-path');
-  const t=ct();
-  // Drag the whole selection if the grabbed item is part of it; otherwise just the grabbed item.
-  let paths=t.sel.has(st.srcName)?[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean):[st.srcPath];
+  // Destination: a folder tile under the cursor, else the pane under the cursor (its current folder).
+  let dest=null,destPaneIdx=-1;
+  if(st.dropTile){dest=st.dropTile.getAttribute('data-path');}
+  else{const idx=paneIndexOfEl(document.elementFromPoint(e.clientX,e.clientY));if(idx>=0){destPaneIdx=idx;const dt=tabOfPane(panes[idx]);if(dt)dest=dt.path;}}
+  if(!dest)return;
+  const srcTab=tabOfPane(panes[st.srcPaneIdx]);
+  // Dropped in the empty space of the same folder the files already live in → nothing to do.
+  if(!st.dropTile&&srcTab&&dest===srcTab.path)return;
+  let paths=srcTab&&srcTab.sel.has(st.srcName)?[...srcTab.sel].map(n=>srcTab.entries.find(x=>x.name===n)?.path).filter(Boolean):[st.srcPath];
   paths=paths.filter(p=>p&&p!==dest);
-  const move=!e.ctrlKey; // default = move into folder; hold Ctrl = copy
-  for(const p of paths){
-    const r=await api.smartCopy(p,dest);
-    if(move&&r&&r.ok&&r.action!=='skipped')await api.trash(p);
-  }
-  await loadDir();
+  if(!paths.length)return;
+  const move=!e.ctrlKey; // default = move; hold Ctrl = copy
+  for(const p of paths){const r=await api.smartCopy(p,dest);if(move&&r&&r.ok&&r.action!=='skipped')await api.trash(p);}
+  if(panes[st.srcPaneIdx])await loadDirInto(panes[st.srcPaneIdx]);                       // source files moved out
+  if(destPaneIdx>=0&&destPaneIdx!==st.srcPaneIdx)await loadDirInto(panes[destPaneIdx]);  // empty-area drop target
 });
-// Pointer left the window during a drag → escalate to a native OS drag (drag-out to other apps).
+// Pointer left the window during a drag → hand off to a native OS drag (drag-out to other apps).
 window.addEventListener('mouseout',e=>{
   if(dragState&&dragState.active&&(e.relatedTarget===null||e.relatedTarget.nodeName==='HTML')){
     const src=dragState.srcPath;dragState=null;document.body.style.cursor='';clearDropHi();
     api.nativeDrag(src);
   }
 });
-// Swallow the click that fires right after a completed drag so it doesn't change selection.
-let dragJustHappened=false;
-document.getElementById('content').addEventListener('click',e=>{if(dragJustHappened){e.stopPropagation();e.preventDefault();}},true);
-
-// ═══ RUBBER-BAND SELECTION — updates CSS classes only, no re-render ═══
-let rbActive=false,rbSX=0,rbSY=0;
-const rbEl=document.getElementById('rubberband');
-document.getElementById('content').addEventListener('mousedown',e=>{
-  if(e.button!==0||e.target.closest('.gi,.li,.ti,.lh,.group-hdr'))return;
-  rbActive=true;rbSX=e.clientX;rbSY=e.clientY;
-  rbEl.style.left=e.clientX+'px';rbEl.style.top=e.clientY+'px';rbEl.style.width='0';rbEl.style.height='0';rbEl.style.display='block';
-});
-document.addEventListener('mousemove',e=>{
-  if(!rbActive)return;
-  const x=Math.min(rbSX,e.clientX),y=Math.min(rbSY,e.clientY),w=Math.abs(e.clientX-rbSX),h=Math.abs(e.clientY-rbSY);
-  rbEl.style.left=x+'px';rbEl.style.top=y+'px';rbEl.style.width=w+'px';rbEl.style.height=h+'px';
-  const rect={left:x,top:y,right:x+w,bottom:y+h};
-  const t=ct();t.sel=new Set();
-  document.querySelectorAll('.gi,.li,.ti').forEach(el=>{
-    const r=el.getBoundingClientRect();
-    if(r.left<rect.right&&r.right>rect.left&&r.top<rect.bottom&&r.bottom>rect.top){
-      const nm=el.getAttribute('data-name');if(nm)t.sel.add(nm);el.classList.add('sel');
-    } else el.classList.remove('sel');
-  });
-  updStat();
-});
-document.addEventListener('mouseup',()=>{if(!rbActive)return;rbActive=false;rbEl.style.display='none'});
 
 // ═══ CONTEXT MENU ═══
 function showCtx(ev,path,isDir,isImage,isVideo){ev.preventDefault();ev.stopPropagation();const m=document.getElementById('ctx');let h='';
@@ -660,8 +784,9 @@ document.addEventListener('keydown',e=>{
   if(e.ctrlKey&&e.key==='x'){e.preventDefault();cutSel()}
   if(e.ctrlKey&&e.key==='v'){e.preventDefault();pasteHere()}
   if(e.ctrlKey&&e.key==='t'){e.preventDefault();addTab(ct().path)}
-  if(e.ctrlKey&&e.key==='w'){e.preventDefault();if(tabs.length>1)closeTab(atid)}
+  if(e.ctrlKey&&e.key==='w'){e.preventDefault();closeTab(focusedPane()?.tabId)}
   if(e.ctrlKey&&e.key==='a'){e.preventDefault();ct().sel=new Set(ct().filtered.map(x=>x.name));syncSelectionCSS()}
+  if(e.key==='F6'){e.preventDefault();if(panes.length>1)setFocus((focusedPaneIdx+1)%panes.length)}
   if(e.shiftKey&&e.key==='Home'){e.preventDefault();selAbove()}
   if(e.shiftKey&&e.key==='End'){e.preventDefault();selBelow()}
   // F12: show debug log

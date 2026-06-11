@@ -23,6 +23,14 @@ Both apps appear as separate windows in your taskbar. Closing Photos does not cl
 
 ---
 
+## What's new in v1.6
+
+- **Split view (dual pane)** — a **⊟⊟ Split** button in the toolbar shows two folders side by side
+  with a shared tab bar. Click a tab to load it into the focused pane; **F6** or clicking switches the
+  focused pane (accent border + path header show which is active). Drag-drop, copy/cut, and paste all
+  work **between the two panes** for fast file moving. Each pane keeps its own sort/view mode and the
+  split state is restored on relaunch.
+
 ## What's new in v1.5
 
 - **Fixed Back/Forward history** — no longer pushes a duplicate when you re-click the current
