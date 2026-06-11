@@ -153,6 +153,18 @@ ipcMain.handle('photos:getSortedList', () => {
   return data;
 });
 
+// Turn the built-in Ctrl/Cmd+R "reload whole renderer" into an in-app folder refresh.
+// A full reload re-runs init() and restores a stale/last-saved session (→ "jumps to Home").
+// preventDefault() here also suppresses the default menu's reload accelerator.
+function guardReload(win) {
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && (input.control || input.meta) && (input.key === 'r' || input.key === 'R')) {
+      event.preventDefault();
+      win.webContents.send('fx:refresh');
+    }
+  });
+}
+
 function createExplorerWindow() {
   explorerWin = new BrowserWindow({
     width: 1280, height: 820, minWidth: 800, minHeight: 500, frame: false,
@@ -160,6 +172,7 @@ function createExplorerWindow() {
     icon: path.join(__dirname, 'icon.svg'), backgroundColor: '#f3f3f3'
   });
   explorerWin.loadFile('explorer.html');
+  guardReload(explorerWin);
   explorerWin.on('closed', () => { explorerWin = null; });
 }
 
@@ -174,6 +187,7 @@ function createPhotosWindow(folder, imagePath, sortedImagePaths) {
     icon: path.join(__dirname, 'icon.svg'), backgroundColor: '#111111'
   });
   win.loadFile('photos.html', { query: { folder: folder || '', image: imagePath || '' } });
+  guardReload(win);
   photosWins.add(win);
   win.on('closed', () => { photosWins.delete(win); });
 }

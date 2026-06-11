@@ -23,6 +23,16 @@ Both apps appear as separate windows in your taskbar. Closing Photos does not cl
 
 ---
 
+## What's new in v1.6.1
+
+- **Fixed thumbnails not loading in large image/video folders** — `loading="lazy"` (added in v1.5)
+  combined with the `localthumb://` protocol and `content-visibility` virtualization made the browser
+  never fetch the thumbnails. We already lazy-load via IntersectionObserver, so the redundant
+  attribute was removed; thumbnails now appear again.
+- **Fixed Ctrl/Cmd+R jumping to Home** — it used to trigger a full renderer reload that restored a
+  stale session. It now refreshes the current folder(s) in place (like F5), and the session is kept
+  current so any reload restores where you were.
+
 ## What's new in v1.6
 
 - **Split view (dual pane)** — a **⊟⊟ Split** button in the toolbar shows two folders side by side

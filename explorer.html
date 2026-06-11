@@ -182,6 +182,8 @@ function applyTheme(){document.body.className=settings.theme==='dark'?'dark':''}
 
 function sessionData(){return {tabs:tabs.map(t=>t.path),split:splitOn,panes:panes.map(p=>tabs.findIndex(t=>t.id===p.tabId))};}
 async function saveSession(){try{await api.sessionSave(sessionData());}catch{}}
+let _sessTmr=null;
+function saveSessionSoon(){clearTimeout(_sessTmr);_sessTmr=setTimeout(saveSession,600);}
 
 async function clearSession(){
   if(!confirm('Clear session history and start fresh?\nAll tabs will close and Home will open.'))return;
@@ -349,6 +351,7 @@ async function navPane(paneIdx,dir,addH=true,saveScroll=true){
   renderTabs();renderPaneHdrs();
   if(paneIdx===focusedPaneIdx){renderABar();renderSB();renderTB();updTitle();}
   await loadDirInto(pane);
+  saveSessionSoon(); // keep the session current so any reload restores where we are
 }
 // loadPane re-renders a pane at its tab's current path WITHOUT touching history (tab switch / split).
 async function loadPane(paneIdx){
@@ -391,6 +394,15 @@ async function loadDirInto(pane){
     api.memorySyncFolder(t.path);
   }
 }
+// Ctrl/Cmd+R (forwarded from main) → re-list every pane in place, keeping scroll position.
+async function refreshAllPanes(){
+  for(let i=0;i<panes.length;i++){
+    const pane=panes[i],t=tabOfPane(pane);
+    if(t){ if(!t.scrollPos)t.scrollPos={}; t.scrollPos[t.path]=pane.el.scrollTop; t._restoreScroll=true; }
+    await loadDirInto(pane);
+  }
+}
+if(window.api&&window.api.onRefresh) window.api.onRefresh(refreshAllPanes);
 
 function renderABar(){const t=ct(),parts=t.path.split('/').filter(Boolean);let ph=`<span class="ps${!parts.length?' c':''}" onclick="nav('/')">/</span>`;let acc='';for(let i=0;i<parts.length;i++){acc+='/'+parts[i];ph+=`<span class="psep">›</span><span class="ps${i===parts.length-1?' c':''}" onclick="nav('${esc(acc)}')">${parts[i]}</span>`}document.getElementById('abar').innerHTML=`<button class="nb" onclick="goBack()" ${t.hi<=0?'disabled':''}>←</button><button class="nb" onclick="goFwd()" ${t.hi>=t.hist.length-1?'disabled':''}>→</button><button class="nb" onclick="goUp()" ${t.path==='/'?'disabled':''}>↑</button><div class="pb">${ph}</div><div class="sbox"><span style="font-size:13px;color:var(--t3)">🔍</span><input value="${t.search||''}" oninput="ct().search=this.value;filterEnt()" placeholder="Search"></div>`}
 
@@ -427,7 +439,9 @@ function buildContent(pane){
       const click=`onclick="event.stopPropagation();sel(event,'${esc(e.name)}')" ondblclick="openItem('${p}',${e.isDirectory},${e.isImage})" oncontextmenu="showCtx(event,'${p}',${e.isDirectory},${e.isImage},${e.isVideo||false})"`;
       const hasThumb=e.isImage||e.isVideo;
       const cachedUrl=hasThumb?thumbCache[e.path]:null;
-      const imgTag=hasThumb?`<img data-fpath="${escAttr(e.path)}" loading="lazy" decoding="async" src="${cachedUrl||''}">`:`<span class="fi">${ico(e)}</span>`;
+      // NOTE: no loading="lazy" — we lazy-load via IntersectionObserver already, and lazy + the
+      // localthumb:// protocol + content-visibility caused the browser to never fetch the thumb.
+      const imgTag=hasThumb?`<img data-fpath="${escAttr(e.path)}" decoding="async" src="${cachedUrl||''}">`:`<span class="fi">${ico(e)}</span>`;
 
       if(isGrid){
         html+=`<div class="gi ${sel}" ${data} ${click} ${dropAttr}><div class="th">${imgTag}${e.isVideo?'<span class="vbadge">▶</span>':''}</div><div class="fn">${e.name}</div></div>`;

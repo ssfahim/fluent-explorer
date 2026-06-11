@@ -58,6 +58,13 @@ drag code paths only execute on Linux. Run through this on your home PC after
 - [ ] Click **⊟⊟ Split** again → collapses back to a single pane; the other tab stays in the tab bar.
 - [ ] Relaunch → split state and both panes' folders are restored.
 
+## 7. v1.6.1 bug fixes (confirm on Linux)
+- [ ] Open a folder with **many images/videos** → thumbnails load as you scroll (the `loading="lazy"`
+      regression that blocked `localthumb://` fetches is removed).
+- [ ] Press **Ctrl+R** (or Cmd+R) in a folder → it **refreshes the current folder in place**, does
+      NOT reload the app or jump to Home. Scroll position is kept. Works in both panes when split.
+- [ ] Quit and relaunch → you land back on the folders you had open (session is saved on navigation).
+
 ## If something regresses
 The changes are grouped by area (history, SMB, clipboard, drag, render). The drag rework in
 `explorer.html` is the riskiest piece and is self-contained in the "INTERNAL DRAG" section — if it

@@ -52,4 +52,6 @@ contextBridge.exposeInMainWorld('api', {
   winMax: () => ipcRenderer.invoke('win:max'),
   winClose: () => ipcRenderer.invoke('win:close'),
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
+  // Ctrl/Cmd+R is intercepted in main and forwarded here as a folder refresh (no full reload).
+  onRefresh: cb => ipcRenderer.on('fx:refresh', () => cb()),
 });

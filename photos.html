@@ -135,7 +135,7 @@ function renderGallery(){
     h+=`<div class="gdate">${fmtDate(date)}</div>`;
     for(const img of imgs){
       const globalIdx = images.indexOf(img);
-      h+=`<div class="git" ondblclick="showViewer(${globalIdx})" draggable="true" ondragstart="startNativeDrag(event,'${esc(img.path)}')"><img data-gpath="${img.path}" data-greqid="" loading="lazy" decoding="async" src=""><div class="gn">${img.name}</div></div>`;
+      h+=`<div class="git" ondblclick="showViewer(${globalIdx})" draggable="true" ondragstart="startNativeDrag(event,'${esc(img.path)}')"><img data-gpath="${img.path}" data-greqid="" decoding="async" src=""><div class="gn">${img.name}</div></div>`;
     }
   }
   h+='</div>';
@@ -362,6 +362,7 @@ function esc(s){return s.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
 function updStat(){document.getElementById('status').textContent=mode==='gallery'?`${images.length} images in ${curFolder.split('/').pop()||'/'}`:`${vi+1} of ${images.length} · ${images[vi]?.name||''}`}
 function updTitle(){document.getElementById('ttl').textContent='WinPhotos — '+(curFolder.split('/').pop()||'/')}
 
+if(window.api&&window.api.onRefresh) window.api.onRefresh(()=>doRefresh());
 init();
 </script>
 </body>
