@@ -1,9 +1,84 @@
+// Bigger libuv threadpool → many fs.stat() calls run in parallel instead of 4-at-a-time.
+// This is the single biggest win for browsing slow SMB/network folders (stat = network round-trip).
+process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '64';
+
 const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net, nativeImage, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
+const { pathToFileURL, fileURLToPath } = require('url');
 const { exec, spawn, execSync } = require('child_process');
+
+// ── Linux desktop clipboard interop helpers (Nemo/Nautilus/Thunar) ──
+const IS_WAYLAND = process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY;
+const _cmdCache = {};
+function hasCmd(c) { if (c in _cmdCache) return _cmdCache[c]; try { execSync('which ' + c, { stdio: 'ignore' }); return _cmdCache[c] = true; } catch { return _cmdCache[c] = false; } }
+const GNOME_TARGET = 'x-special/gnome-copied-files';
+
+// Write file list to the SYSTEM clipboard in the GNOME format other file managers understand.
+// Payload: "copy\nfile:///a\nfile:///b" with NO trailing newline. Uses xclip (X11) / wl-copy (Wayland).
+function writeSystemClipboard(action, paths) {
+  if (!paths || !paths.length) return false;
+  const verb = action === 'cut' ? 'cut' : 'copy';
+  const uris = paths.map(p => pathToFileURL(p).href); // correct file:/// + UTF-8 %-encoding
+  const payload = [verb, ...uris].join('\n');         // no trailing newline (spurious empty URI otherwise)
+  try {
+    if (IS_WAYLAND && hasCmd('wl-copy')) {
+      const p = spawn('wl-copy', ['-n', '--type', GNOME_TARGET], { stdio: ['pipe', 'ignore', 'ignore'] });
+      p.stdin.end(payload);
+      // Also expose readable paths to text fields/terminals
+      try { const t = spawn('wl-copy', ['-n', '--type', 'text/uri-list'], { stdio: ['pipe', 'ignore', 'ignore'] }); t.stdin.end(uris.join('\n')); } catch {}
+      return true;
+    }
+    if (hasCmd('xclip')) {
+      const p = spawn('xclip', ['-selection', 'clipboard', '-t', GNOME_TARGET, '-i'], { stdio: ['pipe', 'ignore', 'ignore'] });
+      p.stdin.end(payload);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+// Read a file list copied from another file manager. Returns {paths, action} or null.
+function readSystemClipboard() {
+  let out = '';
+  try {
+    if (IS_WAYLAND && hasCmd('wl-paste')) out = execSync(`wl-paste --type ${GNOME_TARGET} 2>/dev/null`, { encoding: 'utf8' });
+    else if (hasCmd('xclip')) out = execSync(`xclip -selection clipboard -o -t ${GNOME_TARGET} 2>/dev/null`, { encoding: 'utf8' });
+  } catch { return null; }
+  if (!out) return null;
+  const lines = out.replace(/\r/g, '').split('\n').filter(Boolean);
+  let action = 'copy';
+  const paths = [];
+  for (const line of lines) {
+    if (line === 'copy' || line === 'cut') { action = line; continue; }
+    if (line.startsWith('file://')) { try { paths.push(fileURLToPath(line)); } catch {} }
+  }
+  return paths.length ? { paths, action } : null;
+}
+
+// stat() that can't hang forever on a dead network mount.
+function statWithTimeout(full, ms) {
+  return Promise.race([
+    fs.promises.stat(full),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('stat timeout')), ms)),
+  ]);
+}
+
+// Build a directory entry. Falls back to dirent type (no size/date) if stat times out,
+// so a single unreachable file over SMB never drops the file or freezes the listing.
+async function buildEntry(dirPath, d) {
+  const full = path.join(dirPath, d.name);
+  const ext = path.extname(d.name).toLowerCase().slice(1);
+  const base = { name: d.name, path: full, ext, isImage: IMG_EXT.has(ext), isVideo: VID_EXT.has(ext) };
+  try {
+    const st = await statWithTimeout(full, 5000);
+    return { ...base, isDirectory: st.isDirectory(), size: st.size, modified: st.mtime.toISOString().split('T')[0], modifiedMs: st.mtime.getTime(), createdMs: st.birthtime.getTime(), permissions: (st.mode & 0o777).toString(8) };
+  } catch {
+    return { ...base, isDirectory: d.isDirectory(), size: 0, modified: '', modifiedMs: 0, createdMs: 0, permissions: '', stale: true };
+  }
+}
 let sharp;
 try { sharp = require('sharp'); sharp.cache({ memory: 100, files: 20 }); sharp.concurrency(2); } // Limit sharp to 2 threads and 100MB cache
 catch { console.error('sharp not found, falling back to nativeImage'); }
@@ -27,40 +102,44 @@ let pendingPhotosData = null; // { sortedPaths:[], startImage:'' }
 
 ipcMain.handle('clip:set', (_, d) => {
   globalClipboard = d;
-  // Write to system clipboard so Nautilus/Nemo can paste our files
+  // Mirror to the system clipboard so Nautilus/Nemo/Thunar can paste our files.
+  // Primary: xclip/wl-copy (reliable cross-app). Fallback: Electron writeBuffer.
   if (d.paths && d.paths.length) {
-    try {
-      const action = d.action === 'cut' ? 'cut' : 'copy';
-      const uris = d.paths.map(p => 'file://' + encodeURI(p)).join('\n');
-      clipboard.writeBuffer('x-special/gnome-copied-files', Buffer.from(action + '\n' + uris, 'utf8'));
-      clipboard.writeText(uris);
-    } catch {}
+    const ok = writeSystemClipboard(d.action, d.paths);
+    if (!ok) {
+      try {
+        const action = d.action === 'cut' ? 'cut' : 'copy';
+        const uris = d.paths.map(p => pathToFileURL(p).href).join('\n');
+        clipboard.writeBuffer(GNOME_TARGET, Buffer.from(action + '\n' + uris, 'utf8'));
+        clipboard.writeText(uris);
+      } catch {}
+    }
   }
 });
 ipcMain.handle('clip:get', () => {
-  // Check our internal clipboard first
-  if (globalClipboard.paths && globalClipboard.paths.length) return globalClipboard;
-  // Fallback: read system clipboard (files copied from Nautilus/Nemo/Thunar)
+  // The system clipboard is the source of truth so we also see files copied in Nemo/Nautilus
+  // AFTER we last copied in-app. Fall back to the internal clipboard if the tools aren't present.
+  const sys = readSystemClipboard();
+  if (sys && sys.paths.length) return sys;
+
+  // Electron buffer fallback (works within our own app even without xclip/wl-clipboard)
   try {
-    // Try gnome-copied-files MIME format
-    const buf = clipboard.readBuffer('x-special/gnome-copied-files');
+    const buf = clipboard.readBuffer(GNOME_TARGET);
     if (buf && buf.length > 2) {
-      const content = buf.toString('utf8');
-      const lines = content.split('\n').filter(Boolean);
+      const lines = buf.toString('utf8').replace(/\r/g, '').split('\n').filter(Boolean);
       let action = 'copy';
       const paths = [];
       for (const line of lines) {
         if (line === 'copy' || line === 'cut') { action = line; continue; }
-        if (line.startsWith('file://')) paths.push(decodeURIComponent(new URL(line).pathname));
+        if (line.startsWith('file://')) { try { paths.push(fileURLToPath(line)); } catch {} }
       }
       if (paths.length) return { paths, action };
     }
   } catch {}
   try {
-    // Fallback: plain text URIs
     const text = clipboard.readText();
     if (text && text.includes('file:///')) {
-      const paths = text.split('\n').filter(l => l.startsWith('file://')).map(l => decodeURIComponent(new URL(l).pathname));
+      const paths = text.split('\n').filter(l => l.startsWith('file://')).map(l => { try { return fileURLToPath(l.trim()); } catch { return null; } }).filter(Boolean);
       if (paths.length) return { paths, action: 'copy' };
     }
   } catch {}
@@ -122,16 +201,8 @@ ipcMain.handle('app:openPhotos', (_, folder, imagePath, sortedImagePaths) => {
 // ══════════════ FILESYSTEM ══════════════
 ipcMain.handle('fs:readdir', async (_, dirPath) => {
   try {
-    const dirents = await fs.promises.readdir(dirPath, { withFileTypes: true });
-    const results = [];
-    await Promise.all(dirents.filter(d => !d.name.startsWith('.')).map(async d => {
-      const full = path.join(dirPath, d.name);
-      try {
-        const st = await fs.promises.stat(full);
-        const ext = path.extname(d.name).toLowerCase().slice(1);
-        results.push({ name: d.name, path: full, isDirectory: d.isDirectory(), isImage: IMG_EXT.has(ext), isVideo: VID_EXT.has(ext), ext, size: st.size, modified: st.mtime.toISOString().split('T')[0], modifiedMs: st.mtime.getTime(), createdMs: st.birthtime.getTime(), permissions: (st.mode & 0o777).toString(8) });
-      } catch {}
-    }));
+    const dirents = (await fs.promises.readdir(dirPath, { withFileTypes: true })).filter(d => !d.name.startsWith('.'));
+    const results = await Promise.all(dirents.map(d => buildEntry(dirPath, d)));
     return { ok: 1, entries: results };
   } catch (e) { return { ok: 0, error: e.message }; }
 });
@@ -193,7 +264,7 @@ catch { try { for (const f of fs.readdirSync(CACHE)) { if (f.endsWith('.jpg')) f
 // Resource monitor
 function getResUsage() {
   const m = process.memoryUsage();
-  return { rssMB: Math.round(m.rss / 1048576), heapMB: Math.round(m.heapUsed / 1048576), loadPct: Math.round(os.loadavg()[0] / os.cpus().length * 100), freeMB: Math.round(os.freemem() / 1048576), totalMB: Math.round(os.totalmem() / 1048576) };
+  return { rssMB: Math.round(m.rss / 1048576), heapMB: Math.round(m.heapUsed / 1048576), loadPct: Math.round(os.loadavg()[0] / os.cpus().length * 100), freeMB: Math.round(os.freemem() / 1048576), totalMB: Math.round(os.totalmem() / 1048576), cached: thumbMemCache.size };
 }
 
 // ═══ BATCH THUMBNAIL GENERATOR ═══
@@ -530,26 +601,36 @@ ipcMain.handle('net:mount', async (_, loc) => {
 
     if (gioResult.ok) return gioResult;
 
-    // Method 2: mount.cifs fallback (needs cifs-utils installed, may need sudo)
-    // Try without sudo first (user mounts to /tmp)
+    // Method 2: kernel mount.cifs — much faster than gvfs (50-60 MB/s vs 5-10 MB/s) but needs root.
+    // We try pkexec (GUI password prompt) so a desktop user can opt into the fast mount.
+    // Tuned options: modern SMB dialect, loose metadata caching, 30s attr cache, 1 MiB I/O.
     const mountPoint = `/tmp/winex-smb-${host}-${share.replace(/[^a-zA-Z0-9]/g, '_')}`;
     try { fs.mkdirSync(mountPoint, { recursive: true }); } catch {}
 
-    const cifsResult = await new Promise(resolve => {
-      const opts = user
-        ? `username=${user},password=${pass},workgroup=${domain},uid=${uid},gid=${process.getgid()}`
-        : `guest,uid=${uid},gid=${process.getgid()}`;
+    const gid = process.getgid();
+    const perf = `uid=${uid},gid=${gid},iocharset=utf8,vers=3.0,cache=loose,actimeo=30,rsize=1048576,wsize=1048576`;
+    const opts = user
+      ? `username=${user},password=${pass},domain=${domain},${perf}`
+      : `guest,${perf}`;
+    // Arg arrays (no shell) → credentials can't inject shell commands.
+    const mountArgs = ['mount', '-t', 'cifs', `//${host}/${share}`, mountPoint, '-o', opts];
 
-      exec(`mount -t cifs "//${host}/${share}" "${mountPoint}" -o ${opts}`, { timeout: 15000 }, (err, stdout, stderr) => {
-        if (!err) { resolve({ ok: 1, mountPath: mountPoint }); }
-        else { resolve({ ok: 0, error: stderr || err.message, method: 'cifs' }); }
-      });
+    const runMount = (cmd, args) => new Promise(resolve => {
+      const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      let so = '', se = '';
+      p.stdout.on('data', d => so += d); p.stderr.on('data', d => se += d);
+      const to = setTimeout(() => { try { p.kill(); } catch {} resolve({ ok: 0, error: 'mount timed out' }); }, 20000);
+      p.on('close', code => { clearTimeout(to); code === 0 ? resolve({ ok: 1, mountPath: mountPoint }) : resolve({ ok: 0, error: (se || so || `${cmd} exited ${code}`).trim() }); });
+      p.on('error', e => { clearTimeout(to); resolve({ ok: 0, error: `${cmd} not found: ${e.message}` }); });
     });
 
+    // Try direct mount first (works if already root / has CAP_SYS_ADMIN), then pkexec for a GUI prompt.
+    let cifsResult = await runMount('mount', mountArgs);
+    if (!cifsResult.ok && hasCmd('pkexec')) cifsResult = await runMount('pkexec', mountArgs);
     if (cifsResult.ok) return cifsResult;
 
     // Return combined error info
-    return { ok: 0, error: `gio: ${gioResult.error}\n\nCIFS fallback: ${cifsResult.error}\n\nTips:\n- Check if the server is reachable: ping ${host}\n- Check if smbclient works: smbclient -L ${host} -U ${user || 'guest'}%${pass}\n- Install cifs-utils: sudo apt install cifs-utils\n- For guest access, leave username empty` };
+    return { ok: 0, error: `gio (gvfs): ${gioResult.error}\n\nKernel CIFS mount: ${cifsResult.error}\n\nTips:\n- Check if the server is reachable: ping ${host}\n- Check if smbclient works: smbclient -L ${host} -U ${user || 'guest'}%${pass}\n- Install cifs-utils for the fast mount: sudo apt install cifs-utils\n- For guest access, leave username empty` };
   }
 
   if (loc.type === 'nfs') {
@@ -569,10 +650,11 @@ ipcMain.handle('net:mount', async (_, loc) => {
 // Test connectivity to a host
 ipcMain.handle('net:test', async (_, host) => {
   return new Promise(resolve => {
-    exec(`ping -c 1 -W 2 ${host} 2>&1`, { timeout: 5000 }, (err, out) => {
-      if (!err) resolve({ ok: 1, message: 'Host is reachable' });
-      else resolve({ ok: 0, error: 'Host unreachable' });
-    });
+    // spawn with an arg array → no shell, so a hostile "host" string can't inject commands
+    const p = spawn('ping', ['-c', '1', '-W', '2', String(host || '')], { stdio: 'ignore' });
+    const to = setTimeout(() => { try { p.kill(); } catch {} resolve({ ok: 0, error: 'Host unreachable' }); }, 5000);
+    p.on('close', code => { clearTimeout(to); code === 0 ? resolve({ ok: 1, message: 'Host is reachable' }) : resolve({ ok: 0, error: 'Host unreachable' }); });
+    p.on('error', () => { clearTimeout(to); resolve({ ok: 0, error: 'ping not available' }); });
   });
 });
 
@@ -733,19 +815,10 @@ ipcMain.handle('fs:openWith', async (_, filePath, desktopFile) => {
 // ══════════════ PAGINATED READDIR (prevents freeze on huge folders) ══════════════
 ipcMain.handle('fs:readdirPaged', async (_, dirPath, offset, limit) => {
   try {
-    const dirents = await fs.promises.readdir(dirPath, { withFileTypes: true });
-    const filtered = dirents.filter(d => !d.name.startsWith('.'));
+    const filtered = (await fs.promises.readdir(dirPath, { withFileTypes: true })).filter(d => !d.name.startsWith('.'));
     const total = filtered.length;
     const page = filtered.slice(offset, offset + limit);
-    const results = [];
-    await Promise.all(page.map(async d => {
-      const full = path.join(dirPath, d.name);
-      try {
-        const st = await fs.promises.stat(full);
-        const ext = path.extname(d.name).toLowerCase().slice(1);
-        results.push({ name: d.name, path: full, isDirectory: d.isDirectory(), isImage: IMG_EXT.has(ext), isVideo: VID_EXT.has(ext), ext, size: st.size, modified: st.mtime.toISOString().split('T')[0], modifiedMs: st.mtime.getTime(), createdMs: st.birthtime.getTime(), permissions: (st.mode & 0o777).toString(8) });
-      } catch {}
-    }));
+    const results = await Promise.all(page.map(d => buildEntry(dirPath, d)));
     return { ok: 1, entries: results, total, hasMore: offset + limit < total };
   } catch (e) { return { ok: 0, error: e.message }; }
 });

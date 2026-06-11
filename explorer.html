@@ -49,11 +49,16 @@ select{font-family:inherit;color:var(--tx);background:var(--ib);border:1px solid
 .gi .fn{font-size:11px;line-height:15px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .gi.sel .fn{font-weight:600}
 .gi .vbadge{position:absolute;bottom:2px;right:2px;background:rgba(0,0,0,.7);color:#fff;font-size:9px;padding:1px 4px;border-radius:3px}
-/* Icon size presets */
-.sz-sm{--grid-cell:80px;--thumb-size:48px;--icon-font:24px}
-.sz-md{--grid-cell:100px;--thumb-size:64px;--icon-font:32px}
-.sz-lg{--grid-cell:140px;--thumb-size:96px;--icon-font:48px}
-.sz-xl{--grid-cell:200px;--thumb-size:150px;--icon-font:64px}
+/* Icon size presets (--gi-h = approx tile height, used by content-visibility virtualization) */
+.sz-sm{--grid-cell:80px;--thumb-size:48px;--icon-font:24px;--gi-h:88px}
+.sz-md{--grid-cell:100px;--thumb-size:64px;--icon-font:32px;--gi-h:106px}
+.sz-lg{--grid-cell:140px;--thumb-size:96px;--icon-font:48px;--gi-h:140px}
+.sz-xl{--grid-cell:200px;--thumb-size:150px;--icon-font:64px;--gi-h:196px}
+/* VIRTUALIZATION: skip rendering offscreen items entirely. Huge win for folders with
+   thousands of files — the browser only lays out / paints what's near the viewport. */
+.gi{content-visibility:auto;contain-intrinsic-size:auto var(--gi-h,110px)}
+.li{content-visibility:auto;contain-intrinsic-size:auto 26px}
+.ti{content-visibility:auto;contain-intrinsic-size:auto 66px}
 /* LIST */
 .lh{display:grid;grid-template-columns:2fr 80px 110px 100px;padding:4px 12px;font-size:12px;color:var(--t3);border-bottom:1px solid var(--bd);font-weight:600;gap:8px}
 .lh span{cursor:pointer}.lh span:hover{color:var(--ac)}.lh span.sorted{color:var(--ac)}
@@ -104,8 +109,6 @@ let memory={version:1,favourites:[],bookmarks:[],pinnedFolders:[],cachedFolders:
 // Renderer-side thumb cache (URL strings). Persists within session.
 let thumbCache={};
 let thumbAbort=0;
-// Global request counter — each thumbnail request gets a unique ID
-let globalReqId=0;
 // Direct reference map rebuilt after every buildContent
 let imgElementMap=new Map();
 
@@ -114,6 +117,7 @@ function ico(e){return e.isDirectory?ICONS.folder:e.isVideo?'🎬':(ICONS[e.ext]
 function fmt(b){if(!b)return'—';if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';if(b<1073741824)return(b/1048576).toFixed(1)+' MB';return(b/1073741824).toFixed(1)+' GB'}
 function ct(){return tabs.find(t=>t.id===atid)}
 function esc(s){return s.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
+function escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}
 function fileCategory(e){if(e.isDirectory)return'📁 Folders';if(e.isImage)return'🖼️ Images';if(e.isVideo)return'🎬 Videos';const d=new Set(['txt','pdf','doc','docx','xls','xlsx','csv','md','json','xml','yaml','yml','html','css']);if(d.has(e.ext))return'📄 Documents';return'📎 Other'}
 
 async function init(){
@@ -159,9 +163,9 @@ async function doClose(){
 }
 
 // ═══ TABS ═══
-function addTab(p){const id=++tc;tabs.push({id,path:p,hist:[p],hi:0,entries:[],filtered:[],sel:new Set(),search:'',scroll:0});switchTab(id)}
+function addTab(p){const id=++tc;tabs.push({id,path:p,hist:[p],hi:0,entries:[],filtered:[],sel:new Set(),search:'',scroll:0,scrollPos:{}});switchTab(id)}
 function closeTab(id){if(tabs.length<=1)return;const i=tabs.findIndex(t=>t.id===id);tabs.splice(i,1);if(atid===id)switchTab(tabs[Math.min(i,tabs.length-1)].id);else renderTabs()}
-function switchTab(id){const p=ct();if(p)p.scroll=document.getElementById('content').scrollTop;atid=id;renderTabs();nav(ct().path,false)}
+function switchTab(id){const p=ct();if(p){if(!p.scrollPos)p.scrollPos={};p.scrollPos[p.path]=document.getElementById('content').scrollTop;}atid=id;renderTabs();nav(ct().path,false,false)}
 function renderTabs(){const b=document.getElementById('tabbar');let h='';for(const t of tabs){const n=t.path.split('/').filter(Boolean).pop()||'/';h+=`<div class="tab${t.id===atid?' a':''}" onclick="switchTab(${t.id})" title="${t.path}"><span class="tn">${n}</span>${tabs.length>1?`<span class="tc" onclick="event.stopPropagation();closeTab(${t.id})">✕</span>`:''}</div>`}h+=`<button class="tadd" onclick="addTab(ct().path)">+</button>`;b.innerHTML=h}
 
 function renderTB(){
@@ -212,7 +216,24 @@ function sortEnt(){ct().entries.sort((a,b)=>{if(a.isDirectory!==b.isDirectory)re
 function filterEnt(){const t=ct(),q=t.search.toLowerCase();t.filtered=q?t.entries.filter(e=>e.name.toLowerCase().includes(q)):[...t.entries];buildContent()}
 
 // ═══ NAV ═══
-async function nav(dir,addH=true){const t=ct();t.path=dir;if(addH){t.hist=t.hist.slice(0,t.hi+1);t.hist.push(dir);t.hi=t.hist.length-1}t.sel=new Set();t.search='';loadFolderSort(dir);renderTabs();renderABar();renderSB();renderTB();updTitle();await loadDir()}
+async function nav(dir,addH=true,saveScroll=true){
+  const t=ct();
+  // Remember where we were scrolled in the folder we're leaving (per-folder, restored on Back).
+  // Skipped on tab switches — switchTab already saved the outgoing tab's scroll itself.
+  const cEl=document.getElementById('content');
+  if(!t.scrollPos)t.scrollPos={};
+  if(saveScroll&&t.path)t.scrollPos[t.path]=cEl.scrollTop;
+  if(addH){
+    // Don't push a duplicate of where we already are — that's what made Back "do nothing".
+    if(t.hist[t.hi]!==dir){
+      t.hist=t.hist.slice(0,t.hi+1);
+      t.hist.push(dir);
+      t.hi=t.hist.length-1;
+    }
+  }
+  t.path=dir;t.sel=new Set();t.search='';t._restoreScroll=true;
+  loadFolderSort(dir);renderTabs();renderABar();renderSB();renderTB();updTitle();await loadDir();
+}
 async function loadDir(){
   const t=ct(),el=document.getElementById('content');
   el.innerHTML='<div class="loading">Loading...</div>';
@@ -277,25 +298,28 @@ function buildContent(){
     if(isTile)html+='<div class="tv">';
     for(const e of items){
       const p=esc(e.path),sel=t.sel.has(e.name)?'sel':'';
-      const dragAttr=`draggable="true" ondragstart="nDrag(event,'${p}')"`;
+      // data-path / data-isdir drive the mouse-emulated internal drag (see drag section).
+      const data=`data-name="${escAttr(e.name)}" data-path="${escAttr(e.path)}" data-isdir="${e.isDirectory?1:0}"`;
+      // External drops (from Nemo/desktop) onto a folder tile still use HTML5 DnD.
       const dropAttr=e.isDirectory?`ondragover="dov(event)" ondragleave="dlv(event)" ondrop="drp(event,'${p}')"`:''
       const click=`onclick="event.stopPropagation();sel(event,'${esc(e.name)}')" ondblclick="openItem('${p}',${e.isDirectory},${e.isImage})" oncontextmenu="showCtx(event,'${p}',${e.isDirectory},${e.isImage},${e.isVideo||false})"`;
       const hasThumb=e.isImage||e.isVideo;
       const cachedUrl=hasThumb?thumbCache[e.path]:null;
-      const imgTag=hasThumb?`<img data-fpath="${e.path}" src="${cachedUrl||''}">`:`<span class="fi">${ico(e)}</span>`;
+      const imgTag=hasThumb?`<img data-fpath="${escAttr(e.path)}" loading="lazy" decoding="async" src="${cachedUrl||''}">`:`<span class="fi">${ico(e)}</span>`;
 
       if(isGrid){
-        html+=`<div class="gi ${sel}" data-name="${e.name}" ${click} ${dragAttr} ${dropAttr}><div class="th">${imgTag}${e.isVideo?'<span class="vbadge">▶</span>':''}</div><div class="fn">${e.name}</div></div>`;
+        html+=`<div class="gi ${sel}" ${data} ${click} ${dropAttr}><div class="th">${imgTag}${e.isVideo?'<span class="vbadge">▶</span>':''}</div><div class="fn">${e.name}</div></div>`;
       } else if(isTile){
-        html+=`<div class="ti ${sel}" data-name="${e.name}" ${click} ${dragAttr} ${dropAttr}><div class="th">${imgTag}</div><div class="tinfo"><div class="tname">${e.name}</div><div class="tmeta">${e.isDirectory?'Folder':fmt(e.size)}</div><div class="tdate">${e.modified}</div></div></div>`;
+        html+=`<div class="ti ${sel}" ${data} ${click} ${dropAttr}><div class="th">${imgTag}</div><div class="tinfo"><div class="tname">${e.name}</div><div class="tmeta">${e.isDirectory?'Folder':fmt(e.size)}</div><div class="tdate">${e.modified}</div></div></div>`;
       } else {
         const tp=e.isDirectory?'Folder':e.isVideo?'Video':e.ext?(e.ext.toUpperCase()+' File'):'File';
-        html+=`<div class="li ${sel}" data-name="${e.name}" ${click} ${dragAttr} ${dropAttr}><div class="ln">${imgTag}<span>${e.name}</span></div><span class="lm">${e.isDirectory?'':fmt(e.size)}</span><span class="lm">${tp}</span><span class="lm">${e.modified}</span></div>`;
+        html+=`<div class="li ${sel}" ${data} ${click} ${dropAttr}><div class="ln">${imgTag}<span>${e.name}</span></div><span class="lm">${e.isDirectory?'':fmt(e.size)}</span><span class="lm">${tp}</span><span class="lm">${e.modified}</span></div>`;
       }
     }
     if(isGrid)html+='</div>';
     if(isTile)html+='</div>';
   }
+  const prevScroll=el.scrollTop;
   el.innerHTML=html;
   // Build direct element reference map (no CSS selector ever used for thumb assignment)
   imgElementMap=new Map();
@@ -304,120 +328,73 @@ function buildContent(){
     if(fpath) imgElementMap.set(fpath,imgEl);
   });
   updStat();
-  el.scrollTop=t.scroll||0;
-  loadVisibleThumbs();
+  // Restore the saved scroll position only on a fresh navigation; during background
+  // "load more" re-renders keep wherever the user has scrolled to.
+  if(t._restoreScroll){ el.scrollTop=(t.scrollPos&&t.scrollPos[t.path])||0; t._restoreScroll=false; }
+  else el.scrollTop=prevScroll;
+  observeThumbs();
 }
 
-// ═══ RACE-SAFE THUMBNAIL PIPELINE ═══
-// Every <img> gets a data-reqid. Before applying a URL, we verify the reqid still matches.
-// This prevents stale async responses from overwriting correct thumbnails.
-
-const PLACEHOLDER='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>';
+// ═══ THUMBNAIL PIPELINE — IntersectionObserver driven ═══
+// Only items that actually scroll near the viewport request a thumbnail. This replaces
+// the old scroll-listener + getBoundingClientRect scan (which thrashed layout on every scroll).
 let debugLines=[];
 function dbg(obj){debugLines.push({...obj,ts:Date.now()});if(debugLines.length>500)debugLines.shift()}
 
-function requestThumb(fpath, imgEl){
-  // If already cached, apply immediately — no async, no race
-  if(thumbCache[fpath]){
-    imgEl.src=thumbCache[fpath];
-    imgEl.dataset.reqid='cached';
-    dbg({event:'thumb_cache_hit',path:fpath});
-    return;
+let thumbIO=null;
+let pendingThumbs=new Set(), thumbFlushTmr=null;
+
+function observeThumbs(){
+  const root=document.getElementById('content');
+  if(thumbIO) thumbIO.disconnect();
+  // Drop any thumbnail requests queued for the folder we just left.
+  pendingThumbs.clear(); clearTimeout(thumbFlushTmr);
+  thumbIO=new IntersectionObserver(entries=>{
+    for(const en of entries){
+      if(!en.isIntersecting) continue;
+      const img=en.target, fp=img.getAttribute('data-fpath');
+      thumbIO.unobserve(img); // request a given thumb only once
+      if(fp && !thumbCache[fp]) pendingThumbs.add(fp);
+      else if(fp && thumbCache[fp]) img.src=thumbCache[fp];
+    }
+    scheduleThumbFlush();
+  },{root, rootMargin:'400px 0px'}); // start loading ~400px before they enter view
+
+  // Apply already-cached thumbs instantly; observe the rest.
+  for(const[fp,img]of imgElementMap){
+    if(thumbCache[fp]) img.src=thumbCache[fp];
+    else thumbIO.observe(img);
   }
-  // Assign unique request ID to this element
-  const rid=++globalReqId;
-  imgEl.dataset.reqid=String(rid);
-  imgEl.src=PLACEHOLDER; // reset to prevent showing stale image
-
-  const isVid=fpath.match(/\.(mp4|avi|mkv|mov|webm|flv|wmv)$/i);
-  const promise=isVid?api.getVideoThumb(fpath):api.getThumb(fpath);
-
-  promise.then(url=>{
-    // CRITICAL: verify this element still expects THIS request
-    if(imgEl.dataset.reqid!==String(rid)){
-      dbg({event:'thumb_stale_skip',path:fpath,rid,currentRid:imgEl.dataset.reqid});
-      return; // element was reassigned to a different request — discard
-    }
-    // Verify element still has the same fpath (double check)
-    if(imgEl.dataset.fpath!==fpath){
-      dbg({event:'thumb_path_mismatch',expected:fpath,actual:imgEl.dataset.fpath,rid});
-      return;
-    }
-    if(url){
-      thumbCache[fpath]=url;
-      imgEl.src=url;
-      dbg({event:'thumb_assign_ok',path:fpath,rid});
-    } else {
-      dbg({event:'thumb_null',path:fpath,rid});
-    }
-  });
 }
 
-async function loadVisibleThumbs(){
-  // Cancel any previous batch
-  const batchId = await api.newBatchId();
-  const contentEl=document.getElementById('content');
+function scheduleThumbFlush(){ clearTimeout(thumbFlushTmr); thumbFlushTmr=setTimeout(flushThumbs, 80); }
 
-  // Step 1: Apply cached thumbs immediately (zero IPC)
-  for(const[fpath,el]of imgElementMap){
-    if(thumbCache[fpath]){el.src=thumbCache[fpath]; continue;}
+async function flushThumbs(){
+  if(!pendingThumbs.size) return;
+  const paths=[...pendingThumbs]; pendingThumbs.clear();
+
+  // Cheap pass: whatever the main process already has cached in memory.
+  let mainCached={};
+  try{ mainCached=await api.getCachedThumbs(paths); }catch{}
+  const need=[];
+  for(const p of paths){
+    const url=mainCached[p];
+    if(url){ thumbCache[p]=url; const el=imgElementMap.get(p); if(el)el.src=url; }
+    else need.push(p);
   }
+  if(!need.length) return;
 
-  // Step 2: Batch check main process cache
-  const uncachedPaths=[];
-  for(const[fpath]of imgElementMap){ if(!thumbCache[fpath]) uncachedPaths.push(fpath); }
-
-  if(uncachedPaths.length){
-    const mainCached=await api.getCachedThumbs(uncachedPaths);
-    for(const[p,url]of Object.entries(mainCached)){
-      if(url){ thumbCache[p]=url; const el=imgElementMap.get(p); if(el)el.src=url; }
-    }
-  }
-
-  // Step 3: Find ONLY visible + nearby items that still need thumbs (max 30)
-  const cRect=contentEl.getBoundingClientRect();
-  const vMid=contentEl.scrollTop+contentEl.clientHeight/2;
-  const needLoad=[];
-  for(const[fpath,el]of imgElementMap){
-    if(thumbCache[fpath])continue;
-    const r=el.getBoundingClientRect();
-    const elTop=r.top-cRect.top+contentEl.scrollTop;
-    const isVis=r.top>=cRect.top-200&&r.bottom<=cRect.bottom+200; // visible + 200px buffer
-    needLoad.push({fpath,el,dist:isVis?0:Math.abs(elTop-vMid)});
-  }
-  needLoad.sort((a,b)=>a.dist-b.dist);
-  const batch=needLoad.slice(0, 30); // MAX 30 at a time — never more
-
-  if(!batch.length)return;
-
-  // Step 4: Send ONE batch IPC call (not 13,000 individual calls)
-  const pathsToGenerate=batch.map(b=>b.fpath);
-  const results=await api.generateThumbBatch(pathsToGenerate, batchId);
-
-  // Step 5: Apply results using direct element references (no CSS selector)
-  if(results){
+  // Generate the rest in chunks of 30 (the main process caps concurrency internally).
+  for(let i=0;i<need.length;i+=30){
+    const chunk=need.slice(i,i+30);
+    let results=null;
+    try{ const batchId=await api.newBatchId(); results=await api.generateThumbBatch(chunk, batchId); }catch{}
+    if(!results) continue;
     for(const[p,url]of Object.entries(results)){
-      if(url){
-        thumbCache[p]=url;
-        const el=imgElementMap.get(p);
-        if(el)el.src=url;
-      }
+      if(url){ thumbCache[p]=url; const el=imgElementMap.get(p); if(el)el.src=url; dbg({event:'thumb_assign_ok',path:p}); }
     }
   }
-
-  // Step 6: If there are more uncached items, schedule next batch after a pause
-  const remaining=needLoad.length-batch.length;
-  if(remaining>0){
-    setTimeout(loadVisibleThumbs, 300); // Load next 30 after 300ms breathing room
-  }
 }
-
-// On scroll: load visible thumbnails with debounce
-let scrollTmr=null;
-document.getElementById('content').addEventListener('scroll',()=>{
-  clearTimeout(scrollTmr);
-  scrollTmr=setTimeout(loadVisibleThumbs, 250);
-});
 
 // ═══ SELECTION — toggle CSS class, NO re-render ═══
 function sel(ev,name){
@@ -452,7 +429,7 @@ setInterval(async()=>{
     if(el){
       const ramColor=r.rssMB>800?'#e81123':r.rssMB>500?'#f0ad4e':'var(--t3)';
       const cpuColor=r.loadPct>75?'#e81123':r.loadPct>50?'#f0ad4e':'var(--t3)';
-      el.innerHTML=`<span style="color:${ramColor}" title="App RAM usage">RAM: ${r.rssMB}MB</span><span style="color:${cpuColor}" title="System CPU load">CPU: ${r.loadPct}%</span><span style="color:var(--t3)" title="Thumbnail queue">Q: ${r.qLen}</span><span style="color:var(--t3)" title="System free RAM">Free: ${r.freeMB}MB</span>`;
+      el.innerHTML=`<span style="color:${ramColor}" title="App RAM usage">RAM: ${r.rssMB}MB</span><span style="color:${cpuColor}" title="System CPU load">CPU: ${r.loadPct}%</span><span style="color:var(--t3)" title="Thumbnails cached in memory">Cached: ${r.cached}</span><span style="color:var(--t3)" title="System free RAM">Free: ${r.freeMB}MB</span>`;
     }
   }catch{}
 },3000);
@@ -538,14 +515,77 @@ async function mountNet(i){
   else alert('Mount failed:\n\n'+r.error)
 }
 
-// ═══ DRAG ═══
-function nDrag(ev,path){ev.preventDefault();api.nativeDrag(path)}
+// ═══ DRAG & DROP ═══
+// Resolve a dropped File to an absolute path (E28: File.path; future-proofed via preload).
+function droppedPath(f){ try{ return api.pathForFile(f); }catch{ return f&&f.path; } }
+
+// EXTERNAL drops (from Nemo, desktop, other apps) — these come through as real HTML5 drag events.
 function dov(ev){ev.preventDefault();ev.dataTransfer.dropEffect='copy';ev.currentTarget.classList.add('dov')}
 function dlv(ev){ev.currentTarget.classList.remove('dov')}
-async function drp(ev,dest){ev.preventDefault();ev.currentTarget.classList.remove('dov');const files=ev.dataTransfer.files;if(files&&files.length){for(const f of files){if(f.path)await api.smartCopy(f.path,dest)}await loadDir()}}
-// Drop on content area = drop into current folder
+async function drp(ev,dest){ev.preventDefault();ev.stopPropagation();ev.currentTarget.classList.remove('dov');const files=ev.dataTransfer.files;if(files&&files.length){for(const f of files){const fp=droppedPath(f);if(fp)await api.smartCopy(fp,dest)}await loadDir()}}
+// Drop on empty content area = drop into current folder
 document.getElementById('content').addEventListener('dragover',e=>{e.preventDefault();e.dataTransfer.dropEffect='copy'});
-document.getElementById('content').addEventListener('drop',async e=>{e.preventDefault();const files=e.dataTransfer.files;if(files&&files.length){for(const f of files){if(f.path)await api.smartCopy(f.path,ct().path)}await loadDir()}});
+document.getElementById('content').addEventListener('drop',async e=>{e.preventDefault();const files=e.dataTransfer.files;if(files&&files.length){for(const f of files){const fp=droppedPath(f);if(fp)await api.smartCopy(fp,ct().path)}await loadDir()}});
+// GLOBAL GUARD: without this, dropping a file on the toolbar/sidebar/titlebar makes the
+// window navigate to file:// and blank out the app. Block the default everywhere.
+window.addEventListener('dragover',e=>e.preventDefault());
+window.addEventListener('drop',e=>e.preventDefault());
+
+// ═══ INTERNAL DRAG (mouse-emulated) ═══
+// Native startDrag() hijacks the OS drag, which kills in-app HTML5 drop targets. So we emulate
+// the drag with mouse events: move files between folders WITHIN the app, and only hand off to a
+// native OS drag (startDrag) once the pointer leaves the window — that's how we drag OUT to Nemo/desktop.
+let dragState=null;
+const DRAG_THRESHOLD=6;
+function clearDropHi(){document.querySelectorAll('.gi.dov,.li.dov,.ti.dov').forEach(x=>x.classList.remove('dov'))}
+
+document.getElementById('content').addEventListener('mousedown',e=>{
+  if(e.button!==0)return;
+  const tile=e.target.closest('.gi,.li,.ti');
+  if(!tile)return;
+  dragState={srcPath:tile.getAttribute('data-path'),srcName:tile.getAttribute('data-name'),startX:e.clientX,startY:e.clientY,active:false,dropTile:null};
+});
+document.addEventListener('mousemove',e=>{
+  if(!dragState)return;
+  if(!dragState.active){
+    if(Math.abs(e.clientX-dragState.startX)<DRAG_THRESHOLD&&Math.abs(e.clientY-dragState.startY)<DRAG_THRESHOLD)return;
+    dragState.active=true;document.body.style.cursor='copy';
+  }
+  const el=document.elementFromPoint(e.clientX,e.clientY);
+  const tile=el&&el.closest('.gi,.li,.ti');
+  clearDropHi();
+  if(tile&&tile.getAttribute('data-isdir')==='1'&&tile.getAttribute('data-path')!==dragState.srcPath){
+    tile.classList.add('dov');dragState.dropTile=tile;
+  } else dragState.dropTile=null;
+});
+document.addEventListener('mouseup',async e=>{
+  if(!dragState)return;
+  const st=dragState;dragState=null;document.body.style.cursor='';clearDropHi();
+  if(!st.active)return; // it was a click, not a drag — let selection handle it
+  dragJustHappened=true;setTimeout(()=>dragJustHappened=false,0);
+  if(!st.dropTile)return;
+  const dest=st.dropTile.getAttribute('data-path');
+  const t=ct();
+  // Drag the whole selection if the grabbed item is part of it; otherwise just the grabbed item.
+  let paths=t.sel.has(st.srcName)?[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean):[st.srcPath];
+  paths=paths.filter(p=>p&&p!==dest);
+  const move=!e.ctrlKey; // default = move into folder; hold Ctrl = copy
+  for(const p of paths){
+    const r=await api.smartCopy(p,dest);
+    if(move&&r&&r.ok&&r.action!=='skipped')await api.trash(p);
+  }
+  await loadDir();
+});
+// Pointer left the window during a drag → escalate to a native OS drag (drag-out to other apps).
+window.addEventListener('mouseout',e=>{
+  if(dragState&&dragState.active&&(e.relatedTarget===null||e.relatedTarget.nodeName==='HTML')){
+    const src=dragState.srcPath;dragState=null;document.body.style.cursor='';clearDropHi();
+    api.nativeDrag(src);
+  }
+});
+// Swallow the click that fires right after a completed drag so it doesn't change selection.
+let dragJustHappened=false;
+document.getElementById('content').addEventListener('click',e=>{if(dragJustHappened){e.stopPropagation();e.preventDefault();}},true);
 
 // ═══ RUBBER-BAND SELECTION — updates CSS classes only, no re-render ═══
 let rbActive=false,rbSX=0,rbSY=0;

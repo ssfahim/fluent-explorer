@@ -135,7 +135,7 @@ function renderGallery(){
     h+=`<div class="gdate">${fmtDate(date)}</div>`;
     for(const img of imgs){
       const globalIdx = images.indexOf(img);
-      h+=`<div class="git" ondblclick="showViewer(${globalIdx})" draggable="true" ondragstart="startNativeDrag(event,'${esc(img.path)}')"><img data-gpath="${img.path}" data-greqid="" src=""><div class="gn">${img.name}</div></div>`;
+      h+=`<div class="git" ondblclick="showViewer(${globalIdx})" draggable="true" ondragstart="startNativeDrag(event,'${esc(img.path)}')"><img data-gpath="${img.path}" data-greqid="" loading="lazy" decoding="async" src=""><div class="gn">${img.name}</div></div>`;
     }
   }
   h+='</div>';
@@ -336,7 +336,8 @@ document.addEventListener('drop', async e => {
   // Files dropped from Explorer or desktop
   if(e.dataTransfer.files.length){
     for(const f of e.dataTransfer.files){
-      if(f.path) await api.copyFile(f.path, curFolder);
+      const fp=(()=>{try{return api.pathForFile(f);}catch{return f&&f.path;}})();
+      if(fp) await api.copyFile(fp, curFolder);
     }
     await doRefresh();
   }

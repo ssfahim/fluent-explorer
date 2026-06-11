@@ -23,6 +23,26 @@ Both apps appear as separate windows in your taskbar. Closing Photos does not cl
 
 ---
 
+## What's new in v1.5
+
+- **Fixed Back/Forward history** — no longer pushes a duplicate when you re-click the current
+  folder, so Back works on the first press. Scroll position is remembered per folder and per tab.
+- **Faster, more reliable SMB browsing** — directory listings stat files in parallel (64-thread
+  pool) instead of 4-at-a-time, a stuck file no longer freezes or hides a whole folder, and an
+  optional tuned kernel `mount.cifs` (`vers=3.0,cache=loose,actimeo=30`) is offered via a `pkexec`
+  prompt for much higher throughput than gvfs.
+- **Real clipboard interop with Nemo/Nautilus** — copy in your desktop file manager and paste into
+  Fluent (and vice-versa) using `xclip`/`wl-copy` with the `x-special/gnome-copied-files` format.
+- **Reworked drag-and-drop** — drag files *between folders inside the app* to move them (hold Ctrl
+  to copy) **and** drag them *out* to other apps/desktop. Dropping on the toolbar/sidebar no longer
+  blanks the window.
+- **Smoother large folders** — `content-visibility` virtualization skips offscreen rendering and
+  thumbnails load via `IntersectionObserver` with lazy/async image decode.
+
+See [TESTING.md](TESTING.md) for a verification checklist.
+
+---
+
 ## Features
 
 ### File Manager

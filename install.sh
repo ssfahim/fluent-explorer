@@ -3,8 +3,8 @@ set -e
 APP="$HOME/.local/share/win-explorer"
 APPS="$HOME/.local/share/applications"
 echo "╔════════════════════════════════════════════════╗"
-echo "║  Fluent Explorer v1.4 — Installer              ║"
-echo "║  Now with sharp (10-50x faster thumbnails)     ║"
+echo "║  Fluent Explorer v1.5 — Installer              ║"
+echo "║  Faster SMB, fixed history, clipboard interop  ║"
 echo "╚════════════════════════════════════════════════╝"
 
 echo "[1/5] Checking Node.js..."
@@ -18,7 +18,15 @@ echo "  ✓ Node $(node -v)"
 echo "[2/5] Checking system dependencies..."
 command -v ffmpeg &>/dev/null || sudo apt-get install -y ffmpeg
 command -v smbclient &>/dev/null || sudo apt-get install -y smbclient 2>/dev/null || true
-echo "  ✓ ffmpeg, smbclient"
+# cifs-utils enables the fast kernel SMB mount (optional, falls back to gvfs without it)
+command -v mount.cifs &>/dev/null || sudo apt-get install -y cifs-utils 2>/dev/null || true
+# Clipboard interop with Nemo/Nautilus (copy-paste files between apps)
+if [ "$XDG_SESSION_TYPE" = "wayland" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+  command -v wl-copy &>/dev/null || sudo apt-get install -y wl-clipboard 2>/dev/null || true
+else
+  command -v xclip &>/dev/null || sudo apt-get install -y xclip 2>/dev/null || true
+fi
+echo "  ✓ ffmpeg, smbclient, cifs-utils, clipboard tools"
 
 echo "[3/5] Copying files..."
 DIR="$(cd "$(dirname "$0")" && pwd)"

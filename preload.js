@@ -1,5 +1,8 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('api', {
+  // Resolve a dropped File → absolute path. Electron 28 still has File.path;
+  // webUtils.getPathForFile is the forward-compatible path (required from E32+).
+  pathForFile: f => { try { return webUtils.getPathForFile(f); } catch { return f && f.path; } },
   readdir: p => ipcRenderer.invoke('fs:readdir', p),
   readdirPaged: (p, off, lim) => ipcRenderer.invoke('fs:readdirPaged', p, off, lim),
   listImages: p => ipcRenderer.invoke('fs:listImages', p),
