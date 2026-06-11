@@ -4,6 +4,11 @@
 > After `git pull`, run **`./install.sh`** (or launch from the repo with `npm start`) or you'll
 > still be running the old code.
 
+## v1.9.2 — scrubbing crash fix
+- [ ] In the viewer, **hold down → (or ←)** and let it scrub through hundreds/thousands of images.
+      The app should stay alive (no force-quit) and land on whatever image you stop at. RAM should
+      stay flat (watch the Explorer status bar / system monitor).
+
 ## v1.9.0 — viewer fullscreen + delete
 - [ ] In the image viewer, click **⛶** (or press **F11**): the window goes **true fullscreen** —
       titlebar + top toolbar + bottom status bar all disappear, only the image shows.

@@ -267,44 +267,50 @@ function buildDOM(){
   imgB.addEventListener('dragstart', e => { e.preventDefault(); api.nativeDrag(images[vi].path); });
 }
 
-// One code path for showing image #idx. Shows the cached thumb instantly as a blurred backdrop,
-// then decodes the full-res off-screen and crossfades it in — so arrowing feels instant.
-let navToken=0;
+// SERIALIZED navigation — only ONE full-res decode is ever in flight. Holding the arrow advances the
+// index instantly (the counter updates) but the intermediate images are SKIPPED, never decoded.
+// (Previously every keystroke started a full-resolution decode; ~128 piling up exhausted GPU/RAM and
+//  crashed the whole app.)
+let displayBusy=false, displayTarget=null;
 async function display(idx){
   if(!images.length)return;
   vi=((idx%images.length)+images.length)%images.length;
   zoom=1;
-  const my=++navToken;
-  const img=images[vi]; if(!img)return;
-  // Instant blurred backdrop from the thumbnail (if we already have it)
-  const vbg=document.getElementById('vbg');
-  if(vbg){ const th=thumbUrls[img.path]; vbg.style.backgroundImage=th?`url("${th.replace(/"/g,'%22')}")`:'none'; }
-  let url=preloaded[img.path];
-  if(!url){ url=await api.imageUrl(img.path); preloaded[img.path]=url; }
-  if(my!==navToken)return; // user moved on
-  useA=!useA;
-  const act=useA?imgA:imgB, inact=useA?imgB:imgA;
-  act.style.transform='scale(1)';
-  act.src=url;
-  try{ if(act.decode) await act.decode(); }catch{}
-  if(my!==navToken)return;
-  act.className=''; inact.className='hid';
-  updUI(); renderFilm(); preloadNear();
+  updUI(); // instant counter/name feedback, even while a previous decode is still running
+  if(displayBusy){ displayTarget=vi; return; } // a decode is in flight — keep only the latest target
+  displayBusy=true;
+  try{
+    while(true){
+      const cur=vi; displayTarget=null;
+      const img=images[cur]; if(!img) break;
+      const vbg=document.getElementById('vbg'); if(vbg){ const th=thumbUrls[img.path]; vbg.style.backgroundImage=th?`url("${th.replace(/"/g,'%22')}")`:'none'; }
+      let url=preloaded[img.path]; if(!url){ url=await api.imageUrl(img.path); preloaded[img.path]=url; }
+      const next=useA?imgB:imgA;           // load into the currently-hidden element
+      next.style.transform='scale(1)';
+      next.src=url;
+      try{ if(next.decode) await next.decode(); }catch{}
+      // If the user advanced again while this was decoding, drop this frame and load the newest.
+      if(displayTarget!=null && displayTarget!==cur){ vi=displayTarget; continue; }
+      const prev=useA?imgA:imgB;
+      next.className=''; prev.className='hid'; useA=!useA;
+      renderFilm();
+      if(displayTarget==null) break;
+      vi=displayTarget;
+    }
+  } finally{ displayBusy=false; }
+  preloadNear();
 }
 function showCur(){ return display(vi); }
 function goNext(){ return display(vi+1); }
 function goPrev(){ return display(vi-1); }
 function jumpTo(i){ return display(i); }
 
-// Warm the immediate neighbours: fetch the URL AND kick off a decode so the next arrow is instant.
+// Cache only the next/prev URL strings (cheap) once navigation settles. We deliberately do NOT
+// pre-decode neighbours — that was creating extra full-res decodes that piled up during scrubbing.
 async function preloadNear(){
-  for(let o=1;o<=2;o++){
-    for(const d of [1,-1]){
-      const i=((vi+d*o)%images.length+images.length)%images.length;
-      const im=images[i]; if(!im)continue;
-      if(!preloaded[im.path]) preloaded[im.path]=await api.imageUrl(im.path);
-      try{ const w=new Image(); w.decoding='async'; w.src=preloaded[im.path]; }catch{} // warm Chromium's decode cache
-    }
+  for(const d of [1,-1]){
+    const i=((vi+d)%images.length+images.length)%images.length;
+    const im=images[i]; if(im&&!preloaded[im.path]) preloaded[im.path]=await api.imageUrl(im.path);
   }
 }
 

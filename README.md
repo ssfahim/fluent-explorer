@@ -23,6 +23,14 @@ Both apps appear as separate windows in your taskbar. Closing Photos does not cl
 
 ---
 
+## What's new in v1.9.2
+
+- **Fixed the crash when holding the arrow key to scrub through images.** Every keystroke used to
+  kick off a full-resolution image decode (plus pre-decoding neighbours), so holding the arrow piled
+  up ~128 concurrent decodes and exhausted memory/GPU until the whole app force-quit. Navigation is
+  now **serialized** — only one decode is ever in flight and the images you skip past aren't decoded
+  at all — so you can hold the arrow through thousands of images safely.
+
 ## What's new in v1.9.0 / v1.9.1
 
 - **True fullscreen in the image viewer.** **Double-click the image**, the **⛶ button**, or **F11**
