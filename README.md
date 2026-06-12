@@ -23,6 +23,18 @@ Both apps appear as separate windows in your taskbar. Closing Photos does not cl
 
 ---
 
+## What's new in v1.9.3
+
+- **Viewer no longer decodes full-resolution images** — it now shows a screen-sized (≤2048px) cached
+  copy, ~4× less memory per photo. This is the real fix for the scrub-crash: even decoding hundreds
+  of images stays within RAM. (Original is untouched on disk; GIFs play as-is.)
+- **Fullscreen now also hides the bottom Fit/Fill/100% bar** (and the top bar/filmstrip) — only the
+  image shows; move the mouse to bring the controls back.
+- **Crash logging added.** A renderer/GPU crash is now recorded to `~/.cache/winex-crash.log` with
+  the reason (e.g. `oom`) and memory usage — so if it ever dies again there's a trail. *(The
+  thumbnail debug log at `~/.cache/winex-debug.log` was never removed; it just doesn't capture
+  hard OS-level crashes.)*
+
 ## What's new in v1.9.2
 
 - **Fixed the crash when holding the arrow key to scrub through images.** Every keystroke used to

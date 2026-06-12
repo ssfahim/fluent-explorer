@@ -215,7 +215,10 @@ function exitFullScreen(){ if(window.api&&api.winSetFullScreen) api.winSetFullSc
 if(window.api&&window.api.onFullScreen) window.api.onFullScreen(on=>{
   isFS=on; document.body.classList.toggle('fs',on);
   const b=document.getElementById('immBtn'); if(b) b.classList.toggle('act',on);
-  if(on && mode==='viewer') showChrome(); // viewer controls then auto-hide for a clean view
+  if(mode==='viewer'){
+    if(on) hideChrome();   // entering fullscreen → hide the top/bottom bars (incl. Fit/Fill/100%); mouse-move reveals them
+    else showChrome();     // leaving fullscreen → bring the controls back
+  }
 });
 
 // Delete the current image (to Trash — recoverable) and advance, like Windows Photos.
@@ -284,7 +287,7 @@ async function display(idx){
       const cur=vi; displayTarget=null;
       const img=images[cur]; if(!img) break;
       const vbg=document.getElementById('vbg'); if(vbg){ const th=thumbUrls[img.path]; vbg.style.backgroundImage=th?`url("${th.replace(/"/g,'%22')}")`:'none'; }
-      let url=preloaded[img.path]; if(!url){ url=await api.imageUrl(img.path); preloaded[img.path]=url; }
+      let url=preloaded[img.path]; if(!url){ url=await api.displayImage(img.path); preloaded[img.path]=url; }
       const next=useA?imgB:imgA;           // load into the currently-hidden element
       next.style.transform='scale(1)';
       next.src=url;
@@ -310,7 +313,7 @@ function jumpTo(i){ return display(i); }
 async function preloadNear(){
   for(const d of [1,-1]){
     const i=((vi+d)%images.length+images.length)%images.length;
-    const im=images[i]; if(im&&!preloaded[im.path]) preloaded[im.path]=await api.imageUrl(im.path);
+    const im=images[i]; if(im&&!preloaded[im.path]) preloaded[im.path]=await api.displayImage(im.path);
   }
 }
 

@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('api', {
   cancelThumbBatch: () => ipcRenderer.invoke('fs:cancelThumbBatch'),
   newBatchId: () => ipcRenderer.invoke('fs:newBatchId'),
   imageUrl: p => ipcRenderer.invoke('fs:imageUrl', p),
+  displayImage: p => ipcRenderer.invoke('fs:getDisplayImage', p),
   homedir: () => ipcRenderer.invoke('fs:homedir'),
   quickPaths: () => ipcRenderer.invoke('fs:quickPaths'),
   openFile: p => ipcRenderer.invoke('fs:openFile', p),

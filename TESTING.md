@@ -4,6 +4,14 @@
 > After `git pull`, run **`./install.sh`** (or launch from the repo with `npm start`) or you'll
 > still be running the old code.
 
+## v1.9.3 — scrub-crash fix #2 (display-sizing) + crash logs
+- [ ] Hold **→** through a folder of large photos for a long time (300+). It should NOT crash and RAM
+      should stay low/flat (the viewer now shows ≤2048px copies, not full-res decodes).
+- [ ] Press the fullscreen button (⛶ / F11 / double-click): the **bottom Fit/Fill/100% bar** hides
+      along with the top bar; move the mouse to reveal them.
+- [ ] If anything ever crashes again, check **`~/.cache/winex-crash.log`** — it now records the
+      reason (e.g. `oom`) and memory. Send me that file.
+
 ## v1.9.2 — scrubbing crash fix
 - [ ] In the viewer, **hold down → (or ←)** and let it scrub through hundreds/thousands of images.
       The app should stay alive (no force-quit) and land on whatever image you stop at. RAM should

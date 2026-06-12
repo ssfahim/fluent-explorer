@@ -240,6 +240,13 @@ app.whenReady().then(() => {
 });
 app.on('window-all-closed', () => app.quit());
 
+// Crash diagnostics → ~/.cache/winex-crash.log. A renderer/GPU OOM kills the process before any
+// in-app log flushes, so these OS-level events are the only record of *why* it died.
+const CRASHLOG = path.join(HOME, '.cache', 'winex-crash.log');
+function logCrash(obj){ try { fs.appendFileSync(CRASHLOG, JSON.stringify({ ...obj, date: new Date().toISOString() }) + '\n'); } catch {} }
+app.on('render-process-gone', (_e, wc, d) => logCrash({ event: 'render-process-gone', reason: d.reason, exitCode: d.exitCode, mem: getResUsage() }));
+app.on('child-process-gone', (_e, d) => logCrash({ event: 'child-process-gone', type: d.type, name: d.name, reason: d.reason, exitCode: d.exitCode, mem: getResUsage() }));
+
 ipcMain.handle('app:openPhotos', (_, folder, imagePath, sortedImagePaths) => {
   createPhotosWindow(folder, imagePath, sortedImagePaths);
   return { ok: 1 };
@@ -443,6 +450,43 @@ ipcMain.handle('fs:getVideoThumb', async (_, vp) => {
 });
 
 ipcMain.handle('fs:imageUrl', (_, p) => 'localthumb://' + normPath(p));
+
+// Display-sized image for the viewer. Decoding the FULL-resolution original for every photo is what
+// exhausted memory when scrubbing (a 12MP photo = ~48MB decoded; a few hundred of those = OOM crash).
+// We make a screen-sized (<=2048px) cached JPEG and show that instead — ~8MB decoded, bounded RAM.
+// Small images pass through untouched. Falls back to the original on any failure.
+const DISPLAY_MAX = 2048;
+ipcMain.handle('fs:getDisplayImage', async (_, filePath) => {
+  const fp = normPath(filePath);
+  const orig = 'localthumb://' + fp;
+  const ext = path.extname(fp).toLowerCase().slice(1);
+  if (ext === 'gif') return orig; // keep animation
+  const cp = path.join(CACHE, 'd_' + hashPath(fp + '@' + DISPLAY_MAX) + '.jpg');
+  try { await fs.promises.access(cp); return 'localthumb://' + cp; } catch {}
+  if (sharp && SHARP_JPEG_OK) {
+    try {
+      const meta = await sharp(fp).metadata();
+      if (meta && Math.max(meta.width || 0, meta.height || 0) <= DISPLAY_MAX) return orig; // already small
+      await sharp(fp, { failOn: 'none', limitInputPixels: 1000000000 })
+        .rotate()
+        .resize(DISPLAY_MAX, DISPLAY_MAX, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 86 })
+        .toFile(cp);
+      return 'localthumb://' + cp;
+    } catch (e) { dbg({ event: 'display_sharp_fail', path: fp, error: e.message }); }
+  }
+  try {
+    const img = nativeImage.createFromPath(fp);
+    if (!img.isEmpty()) {
+      const sz = img.getSize();
+      if (Math.max(sz.width, sz.height) <= DISPLAY_MAX) return orig;
+      const scaled = sz.width >= sz.height ? img.resize({ width: DISPLAY_MAX, quality: 'better' }) : img.resize({ height: DISPLAY_MAX, quality: 'better' });
+      await fs.promises.writeFile(cp, scaled.toJPEG(86));
+      return 'localthumb://' + cp;
+    }
+  } catch (e) { dbg({ event: 'display_native_fail', path: fp, error: e.message }); }
+  return orig;
+});
 ipcMain.handle('fs:getCachedThumbs', (_, paths) => { const r = {}; for (const p of paths) { const np = normPath(p); if (thumbMemCache.has(np)) r[p] = thumbMemCache.get(np); } return r; });
 ipcMain.handle('fs:getResourceUsage', () => getResUsage());
 ipcMain.handle('fs:clearThumbQueue', () => { batchAbortId++; return { cleared: 0 }; });
