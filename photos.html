@@ -31,26 +31,30 @@ button{border:none;cursor:pointer;background:transparent;color:#e0e0e0;font-fami
 .vmain{flex:1;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
 /* Blurred instant backdrop (shows the cached thumb the moment you navigate, while full-res decodes) */
 .vbg{position:absolute;inset:0;background-size:cover;background-position:center;filter:blur(28px) brightness(.45);opacity:.55;z-index:0;transition:opacity .2s;pointer-events:none}
-/* Full image: centered, contained, never upscaled past its natural size (like Windows Photos) */
-.vmain img{position:absolute;max-width:100%;max-height:100%;object-fit:contain;z-index:1;transition:opacity .12s}.vmain img.hid{opacity:0;pointer-events:none}
-/* FILL mode: cover the whole viewport (crops); FIT (default) shows the whole image */
+/* Raster images render to a <canvas> via createImageBitmap()+close() so Chromium never accumulates
+   decoded images in its WebKit/Skia cache (that was the scrub-OOM). The canvas fills the viewport;
+   fit/fill/zoom are computed at draw time. A single <img> is kept ONLY for animated GIFs. */
+.vmain canvas{position:absolute;inset:0;width:100%;height:100%;z-index:1}
+.vmain canvas.hid{display:none}
+/* GIF fallback (animation): centered, contained, never upscaled past natural size (like Win Photos) */
+.vmain img{position:absolute;max-width:100%;max-height:100%;object-fit:contain;z-index:1}.vmain img.hid{display:none}
 .vmain img.fill{width:100%;height:100%;max-width:none;max-height:none;object-fit:cover}
 .arr{position:absolute;top:50%;transform:translateY(-50%);width:48px;height:48px;border-radius:50%;background:rgba(255,255,255,.08);font-size:22px;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);z-index:5;transition:opacity .2s,background .1s}.arr:hover{background:rgba(255,255,255,.25)}.arr.l{left:20px}.arr.r{right:20px}
 /* IMMERSIVE: hide all chrome, show only the image (toggled by double-click / button / idle) */
 .viewer.chrome-hidden{cursor:none}
-.viewer.chrome-hidden .vtop,.viewer.chrome-hidden .vbot,.viewer.chrome-hidden .film,.viewer.chrome-hidden .arr{opacity:0;pointer-events:none}
-.vtop,.vbot,.film{transition:opacity .2s}
+.viewer.chrome-hidden .vtop,.viewer.chrome-hidden .film,.viewer.chrome-hidden .arr{opacity:0;pointer-events:none}
+.vtop,.film{transition:opacity .2s}
 .viewer.film-off .film{display:none}
 /* OS FULLSCREEN (F11 / ⛶ button): hide the window's own chrome so only the content shows */
 body.fs .titlebar, body.fs .bar, body.fs .statusbar{display:none}
 .vtop{position:absolute;top:0;left:0;right:0;height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;background:linear-gradient(rgba(0,0,0,.6),transparent);z-index:3}
 .vinfo{font-size:13px;display:flex;align-items:center;gap:10px}.vinfo .fn{font-weight:600}.vinfo .fc{opacity:.5;font-size:12px}
 .vb{width:36px;height:36px;border-radius:6px;font-size:14px;display:flex;align-items:center;justify-content:center;transition:background .1s}.vb:hover{background:rgba(255,255,255,.12)}.vb.act{background:rgba(96,205,255,.2);color:#60cdff}
-.vbot{height:52px;display:flex;align-items:center;justify-content:center;gap:6px;background:rgba(20,20,20,.95);border-top:1px solid rgba(255,255,255,.06);flex-shrink:0;z-index:3}
-.zb{height:30px;min-width:36px;padding:0 10px;border-radius:5px;background:rgba(255,255,255,.07);font-size:13px;transition:background .1s}.zb:hover{background:rgba(255,255,255,.15)}
-.zl{font-size:12px;opacity:.5;width:44px;text-align:center}
-.vsep{width:1px;height:22px;background:rgba(255,255,255,.12);margin:0 6px}
-.film{height:80px;display:flex;align-items:center;gap:5px;padding:0 16px;overflow-x:auto;background:rgba(15,15,15,.98);border-top:1px solid rgba(255,255,255,.04);flex-shrink:0;z-index:3}
+.zl{font-size:12px;opacity:.5;min-width:44px;text-align:center}
+.vsep{width:1px;height:22px;background:rgba(255,255,255,.12);margin:0 4px}
+/* Filmstrip floats over the bottom of the image (Windows Photos) — it never reserves layout space,
+   so the image occupies the entire viewport. Auto-hides with the rest of the chrome. */
+.film{position:absolute;left:0;right:0;bottom:0;height:80px;display:flex;align-items:center;gap:5px;padding:0 16px;overflow-x:auto;background:linear-gradient(transparent,rgba(10,10,10,.92) 40%);border-top:1px solid rgba(255,255,255,.04);z-index:3}
 .ft{width:56px;height:56px;border-radius:5px;overflow:hidden;cursor:pointer;border:2px solid transparent;opacity:.5;transition:all .1s;flex-shrink:0}.ft.a{border-color:#60cdff;opacity:1}.ft:hover{opacity:.8}.ft img{width:100%;height:100%;object-fit:cover}
 .ipanel{position:absolute;top:44px;right:0;bottom:0;width:280px;background:rgba(30,30,30,.97);border-left:1px solid rgba(255,255,255,.08);padding:20px;overflow-y:auto;z-index:4;animation:si .15s ease}
 @keyframes si{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
@@ -73,7 +77,7 @@ body.fs .titlebar, body.fs .bar, body.fs .statusbar{display:none}
 </div>
 <script>
 let mode='gallery', images=[], vi=0, zoom=1, infoOn=false, curFolder='';
-let imgA=null, imgB=null, useA=true, preloaded={}, thumbUrls={};
+let vcanvas=null, vctx=null, gifImg=null, liveBM=null, preloaded={}, thumbUrls={};
 let galCycle=0;
 const params=new URLSearchParams(location.search);
 
@@ -220,6 +224,9 @@ if(window.api&&window.api.onFullScreen) window.api.onFullScreen(on=>{
   if(mode==='viewer'){
     if(on) hideChrome();   // entering fullscreen → hide the top/bottom bars (incl. Fit/Fill/100%); mouse-move reveals them
     else showChrome();     // leaving fullscreen → bring the controls back
+    // The viewport size changes on FS toggle — re-fit the canvas a couple of frames later.
+    setTimeout(()=>{ if(mode==='viewer'){ fitCanvas(); drawBM(); } }, 60);
+    setTimeout(()=>{ if(mode==='viewer'){ fitCanvas(); drawBM(); } }, 250);
   }
 });
 
@@ -240,7 +247,11 @@ function buildDOM(){
   v.innerHTML=`
     <div class="vtop">
       <div class="vinfo"><span>🖼️</span><span class="fn" id="vfn"></span><span class="fc" id="vfc"></span></div>
-      <div style="display:flex;gap:4px">
+      <div style="display:flex;gap:4px;align-items:center">
+        <button class="vb" title="Zoom out (−)" onclick="zOut()">−</button>
+        <span class="zl" id="zl">100%</span>
+        <button class="vb" title="Zoom in (+)" onclick="zIn()">+</button>
+        <div class="vsep"></div>
         <button class="vb" id="infoBtn" onclick="infoOn=!infoOn;updUI()">ℹ️</button>
         <button class="vb" id="filmBtn" title="Toggle filmstrip (F)" onclick="toggleFilm()">▦</button>
         <button class="vb" id="fitBtn" title="Fit / Fill (use the whole screen)" onclick="toggleFitFill()">⊡</button>
@@ -252,31 +263,60 @@ function buildDOM(){
       <div class="vbg" id="vbg"></div>
       ${images.length>1?'<button class="arr l" title="Previous (←)" onclick="event.stopPropagation();goPrev()">‹</button>':''}
       ${images.length>1?'<button class="arr r" id="arrR" title="Next (→)" onclick="event.stopPropagation();goNext()">›</button>':''}
-      <img id="imgA" src="" draggable="true">
-      <img id="imgB" src="" class="hid" draggable="true">
+      <canvas id="vcanvas" draggable="true"></canvas>
+      <img id="gifImg" class="hid" draggable="true">
     </div>
     <div id="ipc"></div>
-    <div class="vbot">
-      <button class="zb" onclick="zOut()">−</button>
-      <span class="zl" id="zl">100%</span>
-      <button class="zb" onclick="zIn()">+</button>
-      <div class="vsep"></div>
-      <button class="zb" onclick="setFitFill(false)">Fit</button>
-      <button class="zb" onclick="setFitFill(true)">Fill</button>
-    </div>
     ${images.length>1?'<div class="film" id="film"></div>':''}`;
-  imgA=document.getElementById('imgA');
-  imgB=document.getElementById('imgB');
-  useA=true;
-  // Native drag from viewer images
-  imgA.addEventListener('dragstart', e => { e.preventDefault(); api.nativeDrag(images[vi].path); });
-  imgB.addEventListener('dragstart', e => { e.preventDefault(); api.nativeDrag(images[vi].path); });
+  vcanvas=document.getElementById('vcanvas');
+  // willReadFrequently → Chromium uses a CPU-backed canvas, so each image is NOT uploaded as a GPU
+  // texture. On integrated GPUs (Mint) the GPU process was climbing to ~520MB and crashing the whole
+  // app even with gigabytes of free RAM; CPU compositing keeps the GPU process idle and stable.
+  vctx=vcanvas.getContext('2d',{ willReadFrequently:true, alpha:false });
+  gifImg=document.getElementById('gifImg');
+  liveBM=null;
+  // Native drag from the viewer
+  vcanvas.addEventListener('dragstart', e => { e.preventDefault(); api.nativeDrag(images[vi].path); });
+  gifImg.addEventListener('dragstart', e => { e.preventDefault(); api.nativeDrag(images[vi].path); });
 }
 
-// SERIALIZED navigation — only ONE full-res decode is ever in flight. Holding the arrow advances the
-// index instantly (the counter updates) but the intermediate images are SKIPPED, never decoded.
-// (Previously every keystroke started a full-resolution decode; ~128 piling up exhausted GPU/RAM and
-//  crashed the whole app.)
+// ═══ FLAT-MEMORY CANVAS RENDERER ═══════════════════════════════════════════════════════════════
+// Root cause of the scrub-crash: a Chromium <img> retains its DECODED pixels in the WebKit/Skia
+// cache even after src changes, and webFrame.clearCache() did not reliably free it on this build →
+// memory climbed → Linux OOM-killer SIGKILLed the whole app (uncatchable, no log).
+// Fix: never put full images in an <img>. We fetch the display-sized JPEG BYTES, decode them with
+// createImageBitmap() (off the element cache), paint the bitmap to a single reused <canvas>, then
+// bitmap.close() to free the decode IMMEDIATELY. At most ONE decoded bitmap is alive at a time →
+// memory is flat (a sawtooth at most), regardless of how many thousand images you scrub through.
+
+// Size the canvas backing store to the viewport (× devicePixelRatio for crisp output).
+function fitCanvas(){
+  const m=document.getElementById('vmain'); if(!m||!vcanvas) return false;
+  const dpr=window.devicePixelRatio||1;
+  const w=Math.max(1,m.clientWidth), h=Math.max(1,m.clientHeight);
+  const bw=Math.round(w*dpr), bh=Math.round(h*dpr);
+  if(vcanvas.width!==bw||vcanvas.height!==bh){ vcanvas.width=bw; vcanvas.height=bh; }
+  return true;
+}
+// Draw the currently-live bitmap with the active fit/fill + zoom. Centered, no pan (matches before).
+function drawBM(){
+  if(!liveBM||!vctx||!vcanvas) return;
+  const dpr=window.devicePixelRatio||1;
+  const cw=vcanvas.width, ch=vcanvas.height;
+  const iw=liveBM.width, ih=liveBM.height;
+  const contain=Math.min(cw/iw, ch/ih);
+  const cover=Math.max(cw/iw, ch/ih);
+  // Fit = contain but never enlarge past natural size; Fill = cover (crops). Then apply zoom.
+  let scale = (fillMode ? cover : Math.min(contain, dpr)) * zoom;
+  const dw=iw*scale, dh=ih*scale;
+  const dx=(cw-dw)/2, dy=(ch-dh)/2;
+  vctx.clearRect(0,0,cw,ch);
+  vctx.imageSmoothingEnabled=true; vctx.imageSmoothingQuality='high';
+  vctx.drawImage(liveBM, dx, dy, dw, dh);
+}
+
+// SERIALIZED navigation — only ONE decode is ever in flight. Holding the arrow advances the index
+// instantly (counter updates immediately) but intermediate images are SKIPPED, never decoded.
 let displayBusy=false, displayTarget=null;
 async function display(idx){
   if(!images.length)return;
@@ -290,17 +330,31 @@ async function display(idx){
       const cur=vi; displayTarget=null;
       const img=images[cur]; if(!img) break;
       const vbg=document.getElementById('vbg'); if(vbg){ const th=thumbUrls[img.path]; vbg.style.backgroundImage=th?`url("${th.replace(/"/g,'%22')}")`:'none'; }
-      let url=preloaded[img.path]; if(!url){ url=await api.displayImage(img.path); preloaded[img.path]=url; }
-      const next=useA?imgB:imgA;           // load into the currently-hidden element
-      next.style.transform='scale(1)';
-      next.src=url;
-      try{ if(next.decode) await next.decode(); }catch{}
-      // If the user advanced again while this was decoding, drop this frame and load the newest.
-      if(displayTarget!=null && displayTarget!==cur){ vi=displayTarget; continue; }
-      const prev=useA?imgA:imgB;
-      next.className=''; prev.className='hid'; useA=!useA;
-      applyFitFill(); renderFilm();
-      bumpCacheGuard();   // purge Chromium's accumulated decode cache every N images
+      const isGif=(img.ext||'').toLowerCase()==='gif';
+      if(isGif){
+        // Animated GIF: createImageBitmap would freeze it on frame 1, so use the single reusable <img>.
+        let url=preloaded[img.path]; if(!url){ url=await api.displayImage(img.path); preloaded[img.path]=url; }
+        if(displayTarget!=null && displayTarget!==cur){ vi=displayTarget; continue; }
+        if(liveBM){ liveBM.close(); liveBM=null; }
+        gifImg.style.transform='scale(1)'; gifImg.src=url; gifImg.classList.toggle('fill',fillMode); gifImg.classList.remove('hid'); vcanvas.classList.add('hid');
+      } else {
+        // Raster: bytes → ImageBitmap → canvas → close(). No <img> cache, no accumulation.
+        let bm=null;
+        try{
+          const r=await api.imageBytes(img.path);
+          if(r && r.ok && r.buf){ bm=await createImageBitmap(new Blob([r.buf])); }
+        }catch(e){ try{ logClientErr('decode', img.path, e); }catch{} }
+        // If the user advanced again while decoding, drop this frame, free it, and load the newest.
+        if(displayTarget!=null && displayTarget!==cur){ if(bm) bm.close(); vi=displayTarget; continue; }
+        if(bm){
+          if(liveBM) liveBM.close();   // free the previous decode the instant the next is ready
+          liveBM=bm;
+          gifImg.classList.add('hid'); gifImg.removeAttribute('src');
+          vcanvas.classList.remove('hid');
+          fitCanvas(); drawBM();
+        }
+      }
+      scheduleFilm(); // debounced — never rebuild the strip / fetch thumbs mid-scrub (see below)
       if(displayTarget==null) break;
       vi=displayTarget;
     }
@@ -312,36 +366,34 @@ function goNext(){ return display(vi+1); }
 function goPrev(){ return display(vi-1); }
 function jumpTo(i){ return display(i); }
 
-// ═══ MEMORY GUARD ═══ Chromium keeps every decoded image in its WebKit/Skia cache even after we
-// swap src, and only evicts under late/unreliable memory pressure → it piles up and the OOM-killer
-// takes the whole app. webFrame.clearCache() is the documented lever that actually frees it. We call
-// it every N images (the 2 live <img> decodes survive; only the off-screen pile is purged).
-let _navCount=0;
-function bumpCacheGuard(){ if(++_navCount % 24 === 0 && window.api && api.clearImageCache) api.clearImageCache(); }
-// Idle backstop too, in case you stop on an image after a long run.
-setInterval(()=>{ if(mode==='viewer' && window.api && api.clearImageCache) api.clearImageCache(); }, 25000);
+function logClientErr(kind, path, e){ if(window.api&&api.logClient) api.logClient({ kind, path, error: (e&&e.message)||String(e) }); }
+
+// Re-fit the canvas whenever the viewport changes (window resize, fullscreen enter/exit).
+window.addEventListener('resize', ()=>{ if(mode==='viewer'){ fitCanvas(); drawBM(); } });
 
 // ═══ FIT / FILL ═══ Fit = whole image visible (contain). Fill = cover the screen, cropping.
 let fillMode=false;
 function applyFitFill(){
-  [imgA,imgB].forEach(i=>{ if(i) i.classList.toggle('fill', fillMode); });
+  if(gifImg) gifImg.classList.toggle('fill', fillMode);
+  drawBM(); // raster path redraws with the new scale
   const b=document.getElementById('fitBtn');
   if(b){ b.textContent=fillMode?'⊟':'⊡'; b.classList.toggle('act',fillMode); b.title=fillMode?'Fill (cropped to screen) — click for Fit':'Fit (whole image) — click for Fill'; }
 }
 function toggleFitFill(){ fillMode=!fillMode; applyFitFill(); }
 function setFitFill(f){ fillMode=f; applyFitFill(); }
 
-// Cache only the next/prev URL strings (cheap) once navigation settles. We deliberately do NOT
-// pre-decode neighbours — that was creating extra full-res decodes that piled up during scrubbing.
+// Cache only the next/prev display URL strings (cheap, for the GIF path / backdrop). We deliberately
+// do NOT prefetch/cache decoded bytes — that would re-introduce memory growth.
 async function preloadNear(){
   for(const d of [1,-1]){
     const i=((vi+d)%images.length+images.length)%images.length;
-    const im=images[i]; if(im&&!preloaded[im.path]) preloaded[im.path]=await api.displayImage(im.path);
+    const im=images[i]; if(im && (im.ext||'').toLowerCase()==='gif' && !preloaded[im.path]) preloaded[im.path]=await api.displayImage(im.path);
   }
 }
 
 function updUI(){
   const img=images[vi]; if(!img)return;
+  if(window.api&&api.reportViewer) api.reportViewer({ i: vi, total: images.length, name: img.name });
   document.getElementById('vfn').textContent=img.name;
   document.getElementById('vfc').textContent=`${vi+1} of ${images.length}`;
   document.getElementById('zl').textContent=Math.round(zoom*100)+'%';
@@ -360,6 +412,13 @@ function updUI(){
   updStat();
 }
 
+// DEBOUNCED filmstrip. renderFilm() fires api.getThumb() for ~30 entries, and getThumb decodes in
+// the MAIN process (sharp/nativeImage). Doing that on EVERY navigation meant a fast scrub fired
+// hundreds of synchronous native decodes in main → native crash of the whole app at ~200 images
+// (flat memory, both windows gone — exactly the recurring "force quit"). We now only rebuild the
+// strip ~220ms AFTER navigation settles, so holding the arrow never touches the thumbnail decoder.
+let _filmTmr=null;
+function scheduleFilm(){ clearTimeout(_filmTmr); _filmTmr=setTimeout(()=>{ if(mode==='viewer' && !displayBusy) renderFilm(); }, 220); }
 function renderFilm(){
   const fs=document.getElementById('film'); if(!fs)return;
   const s=Math.max(0,vi-15), e=Math.min(images.length,vi+15);
@@ -387,7 +446,7 @@ async function loadFilmstripThumbs(){
 
 function zIn(){ zoom=Math.min(zoom+.25,5); apZ(); }
 function zOut(){ zoom=Math.max(zoom-.25,.25); apZ(); }
-function apZ(){ const act=useA?imgA:imgB; if(act) act.style.transform=`scale(${zoom})`; document.getElementById('zl').textContent=Math.round(zoom*100)+'%'; }
+function apZ(){ if(gifImg && !gifImg.classList.contains('hid')) gifImg.style.transform=`scale(${zoom})`; drawBM(); const zl=document.getElementById('zl'); if(zl) zl.textContent=Math.round(zoom*100)+'%'; }
 
 function toGallery(){ mode='gallery'; chromeHidden=false; clearTimeout(idleTmr); document.getElementById('gallery').style.display=''; document.getElementById('viewer').className='viewer'; renderBar(); updStat(); }
 async function changeFolder(){ const f=await api.pickFolder(); if(f){ curFolder=f; preloaded={}; thumbUrls={}; images=await api.listImages(curFolder); renderGallery(); renderBar(); updStat(); updTitle(); } }

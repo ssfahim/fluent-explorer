@@ -9,15 +9,15 @@ const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net, nativeImage, 
 // log". We detect that case separately by scanning the kernel log on next launch (see below).
 try { crashReporter.start({ uploadToServer: false }); } catch {}
 
-// Home-PC performance: offload image rasterization to the GPU. We do NOT force acceleration onto
-// Chromium-blocklisted GPUs anymore — `ignore-gpu-blocklist` was forcing accel on Mint's integrated
-// GPU and turning accumulated image textures into GPU-process crashes. Launch with FLUENT_NO_GPU=1
-// to disable hardware acceleration entirely if a driver still misbehaves.
-if (!process.env.FLUENT_NO_GPU) {
+// GPU policy. On integrated GPUs (e.g. Mint) aggressively forcing GPU rasterization + zero-copy made
+// the GPU process accumulate image textures and crash the whole app — even with plenty of free RAM.
+// So those switches are now OPT-IN (FLUENT_GPU_RASTER=1) instead of the default. FLUENT_NO_GPU=1 still
+// disables hardware acceleration entirely. Default = let Chromium decide (safest on weak drivers).
+if (process.env.FLUENT_NO_GPU) {
+  app.disableHardwareAcceleration();
+} else if (process.env.FLUENT_GPU_RASTER) {
   app.commandLine.appendSwitch('enable-gpu-rasterization');
   app.commandLine.appendSwitch('enable-zero-copy');
-} else {
-  app.disableHardwareAcceleration();
 }
 const path = require('path');
 const fs = require('fs');
@@ -242,35 +242,91 @@ app.whenReady().then(() => {
   });
   if (isPhotosOnly) createPhotosWindow(process.argv[3] || path.join(HOME, 'Pictures'), process.argv[4] || '');
   else createExplorerWindow();
-  checkPriorOOM();        // did the last session get OOM-killed?
-  startMemorySampler();   // log the per-process memory curve for evidence
+  detectPriorUncleanExit(); // did the LAST session die without a clean shutdown? (OOM-kill etc.)
+  checkPriorOOM();          // also try the kernel log for the *reason* (best-effort; needs journal perms)
+  startMemorySampler();     // log the per-process memory curve + heartbeat the liveness marker
 });
-app.on('window-all-closed', () => app.quit());
+// Clean-exit path: clear the liveness marker so the NEXT launch knows we shut down properly.
+app.on('window-all-closed', () => { markCleanExit(); app.quit(); });
+app.on('before-quit', () => markCleanExit());
 
 // Crash diagnostics → ~/.cache/winex-crash.log. A renderer/GPU OOM kills the process before any
 // in-app log flushes, so these OS-level events are the only record of *why* it died.
 const CRASHLOG = path.join(HOME, '.cache', 'winex-crash.log');
 function logCrash(obj){ try { fs.appendFileSync(CRASHLOG, JSON.stringify({ ...obj, date: new Date().toISOString() }) + '\n'); } catch {} }
-app.on('render-process-gone', (_e, wc, d) => logCrash({ event: 'render-process-gone', reason: d.reason, exitCode: d.exitCode, mem: getResUsage() }));
-app.on('child-process-gone', (_e, d) => logCrash({ event: 'child-process-gone', type: d.type, name: d.name, reason: d.reason, exitCode: d.exitCode, mem: getResUsage() }));
+app.on('render-process-gone', (_e, wc, d) => logCrash({ event: 'render-process-gone', reason: d.reason, exitCode: d.exitCode, mem: getResUsage(), viewer: lastViewerState }));
+app.on('child-process-gone', (_e, d) => logCrash({ event: 'child-process-gone', type: d.type, name: d.name, reason: d.reason, exitCode: d.exitCode, mem: getResUsage(), viewer: lastViewerState }));
+// A GPU-process death (common on weak/integrated drivers) shows up as child-process-gone type 'GPU'.
+// Catch main-process JS faults too — not a native segfault, but records the reason before we die.
+process.on('uncaughtException', err => { try { logCrash({ event: 'main_uncaught', error: err && (err.stack || err.message || String(err)), mem: getResUsage(), viewer: lastViewerState }); } catch {} });
+process.on('unhandledRejection', reason => { try { logCrash({ event: 'main_unhandled_rejection', reason: String((reason && (reason.stack || reason.message)) || reason) }); } catch {} });
+
+// ── Session liveness marker ── The whole point: a Linux OOM-kill SIGKILLs us with NO catchable event
+// and NO journal permission on most desktops, so winex-crash.log stayed empty. We instead write a
+// marker every heartbeat while running and clear it on a clean quit. If it's still present (and not
+// ours) at the NEXT launch, the previous session died uncleanly → we log it, with the last memory
+// sample + the image the viewer was on. This produces a crash record WITHOUT needing kernel logs.
+const SESSION_LIVE = path.join(HOME, '.cache', 'winex-session-live.json');
+const APP_VERSION = (() => { try { return require('./package.json').version; } catch { return '?'; } })();
+let lastViewerState = null;     // {i,total,name} most recent image shown in any Photos window
+let cleanExit = false;
+function writeLiveMarker() {
+  try {
+    const rows = app.getAppMetrics().map(m => ({ type: m.type, ws: Math.round(m.memory.workingSetSize / 1024) }));
+    const peakRss = Math.max(0, ...rows.map(r => r.ws));
+    fs.writeFileSync(SESSION_LIVE, JSON.stringify({
+      pid: process.pid, version: APP_VERSION, running: true,
+      ts: Date.now(), freeMB: Math.round(os.freemem() / 1048576),
+      peakProcMB: peakRss, procs: rows, viewer: lastViewerState,
+    }));
+  } catch {}
+}
+function markCleanExit() { if (cleanExit) return; cleanExit = true; try { fs.unlinkSync(SESSION_LIVE); } catch {} }
+function detectPriorUncleanExit() {
+  let prev = null;
+  try { prev = JSON.parse(fs.readFileSync(SESSION_LIVE, 'utf8')); } catch { prev = null; }
+  // Stale marker present from a DIFFERENT pid that never cleaned up → previous session died hard.
+  if (prev && prev.running && prev.pid !== process.pid) {
+    logCrash({
+      event: 'unclean_shutdown', note: 'previous session ended without a clean quit (likely OOM-kill / force-quit)',
+      prevVersion: prev.version, lastSeenTs: prev.ts, lastFreeMB: prev.freeMB,
+      peakProcMB: prev.peakProcMB, lastProcs: prev.procs, diedAt: prev.viewer,
+    });
+  }
+  writeLiveMarker();
+}
 
 // A kernel OOM-kill can't be caught in-process (SIGKILL). Detect the PREVIOUS session's OOM-kill by
-// scanning the kernel log on launch, so "silent force-quit" finally leaves a record of WHY.
+// scanning the kernel log on launch (best-effort — many desktops deny journal access to non-root).
 function checkPriorOOM() {
   exec('journalctl -k -b -1 --no-pager 2>/dev/null | grep -iE "killed process.*(electron|fluent|win-explorer)" | tail -3', { timeout: 4000 }, (e, out) => {
     if (!e && out && out.trim()) logCrash({ event: 'prior_oom_kill', detail: out.trim().split('\n') });
   });
+  // dmesg fallback (also commonly restricted, but free to try).
+  exec('dmesg 2>/dev/null | grep -iE "killed process.*(electron|fluent|win-explorer)" | tail -3', { timeout: 4000 }, (e, out) => {
+    if (!e && out && out.trim()) logCrash({ event: 'prior_oom_kill_dmesg', detail: out.trim().split('\n') });
+  });
 }
 // Sample per-process memory (incl. GPU) every 5s into the debug log so a reproduction produces the
-// climbing curve — direct evidence of accumulation. type 'GPU'/'Tab' working set is what to watch.
+// climbing curve — direct evidence of accumulation. Also heartbeats the liveness marker, and warns
+// to the crash log when free memory gets dangerously low (early evidence before a possible OOM-kill).
+let _lowMemWarned = false;
 function startMemorySampler() {
   setInterval(() => {
     try {
       const rows = app.getAppMetrics().map(m => ({ type: m.type, ws: Math.round(m.memory.workingSetSize / 1024) /*MB*/ }));
-      dbg({ event: 'mem', procs: rows, freeMB: Math.round(os.freemem() / 1048576) });
+      const freeMB = Math.round(os.freemem() / 1048576);
+      dbg({ event: 'mem', procs: rows, freeMB, viewer: lastViewerState });
+      writeLiveMarker();
+      if (freeMB < 350 && !_lowMemWarned) { _lowMemWarned = true; logCrash({ event: 'low_memory_warning', freeMB, procs: rows, viewer: lastViewerState }); }
+      else if (freeMB > 700) { _lowMemWarned = false; }
     } catch {}
   }, 5000);
 }
+
+// Renderer diagnostics → debug log (decode failures etc.) and the viewer's current image → memory.
+ipcMain.on('diag:client', (_e, o) => { try { dbg({ event: 'client', ...o }); } catch {} });
+ipcMain.on('diag:viewer', (_e, s) => { lastViewerState = s; });
 
 ipcMain.handle('app:openPhotos', (_, folder, imagePath, sortedImagePaths) => {
   createPhotosWindow(folder, imagePath, sortedImagePaths);
@@ -363,7 +419,13 @@ async function generateThumbFile(fp, cp) {
         .jpeg({ quality: 72, mozjpeg: true })
         .toFile(cp);
       return true;
-    } catch (e) { dbg({ event: 'sharp_fail_fallback', path: fp, error: e.message }); }
+    } catch (e) {
+      // This libvips build's JPEG decoder is broken (the probe lied). sharp failing repeatedly in
+      // the main process is a native-crash liability during a fast scrub, so once it fails we STOP
+      // using sharp entirely and rely on Electron's nativeImage (Chromium codecs) from here on.
+      if (SHARP_JPEG_OK) { SHARP_JPEG_OK = false; dbg({ event: 'sharp_disabled', reason: e.message }); }
+      else dbg({ event: 'sharp_fail_fallback', path: fp, error: e.message });
+    }
   }
   try {
     const img = nativeImage.createFromPath(fp);
@@ -481,36 +543,59 @@ ipcMain.handle('fs:imageUrl', (_, p) => 'localthumb://' + normPath(p));
 // We make a screen-sized (<=2048px) cached JPEG and show that instead — ~8MB decoded, bounded RAM.
 // Small images pass through untouched. Falls back to the original on any failure.
 const DISPLAY_MAX = 2048;
-ipcMain.handle('fs:getDisplayImage', async (_, filePath) => {
+// Resolve the on-disk file to *show* for `filePath`: the cached <=2048px JPEG (generated on demand),
+// or the original when it's already small / a GIF / can't be re-encoded. Returns an absolute path.
+async function resolveDisplayPath(filePath) {
   const fp = normPath(filePath);
-  const orig = 'localthumb://' + fp;
   const ext = path.extname(fp).toLowerCase().slice(1);
-  if (ext === 'gif') return orig; // keep animation
+  if (ext === 'gif') return fp; // keep animation
   const cp = path.join(CACHE, 'd_' + hashPath(fp + '@' + DISPLAY_MAX) + '.jpg');
-  try { await fs.promises.access(cp); return 'localthumb://' + cp; } catch {}
+  try { await fs.promises.access(cp); return cp; } catch {}
   if (sharp && SHARP_JPEG_OK) {
     try {
       const meta = await sharp(fp).metadata();
-      if (meta && Math.max(meta.width || 0, meta.height || 0) <= DISPLAY_MAX) return orig; // already small
+      if (meta && Math.max(meta.width || 0, meta.height || 0) <= DISPLAY_MAX) return fp; // already small
       await sharp(fp, { failOn: 'none', limitInputPixels: 1000000000 })
         .rotate()
         .resize(DISPLAY_MAX, DISPLAY_MAX, { fit: 'inside', withoutEnlargement: true })
         .jpeg({ quality: 86 })
         .toFile(cp);
-      return 'localthumb://' + cp;
+      return cp;
     } catch (e) { dbg({ event: 'display_sharp_fail', path: fp, error: e.message }); }
   }
   try {
     const img = nativeImage.createFromPath(fp);
     if (!img.isEmpty()) {
       const sz = img.getSize();
-      if (Math.max(sz.width, sz.height) <= DISPLAY_MAX) return orig;
+      if (Math.max(sz.width, sz.height) <= DISPLAY_MAX) return fp;
       const scaled = sz.width >= sz.height ? img.resize({ width: DISPLAY_MAX, quality: 'better' }) : img.resize({ height: DISPLAY_MAX, quality: 'better' });
       await fs.promises.writeFile(cp, scaled.toJPEG(86));
-      return 'localthumb://' + cp;
+      return cp;
     }
   } catch (e) { dbg({ event: 'display_native_fail', path: fp, error: e.message }); }
-  return orig;
+  return fp;
+}
+
+ipcMain.handle('fs:getDisplayImage', async (_, filePath) => 'localthumb://' + await resolveDisplayPath(filePath));
+
+// Return image BYTES for the viewer to decode in the RENDERER (Chromium codecs) via
+// createImageBitmap()+close(). Two wins over the old approach:
+//   1) No decoded pixels pile up in Chromium's <img> cache → flat renderer memory.
+//   2) NO image decode in the MAIN process — sharp/nativeImage are never touched here, so a native
+//      decoder fault can't take down the whole app (that crashed BOTH windows at ~200 images).
+// We send an existing display-sized copy if one is already on disk (smaller IPC), else the original.
+// We never GENERATE one here (that would mean a main-process decode again).
+ipcMain.handle('fs:getDisplayBytes', async (_, filePath) => {
+  try {
+    const fp = normPath(filePath);
+    const ext = path.extname(fp).toLowerCase().slice(1);
+    if (ext !== 'gif') {
+      const cp = path.join(CACHE, 'd_' + hashPath(fp + '@' + DISPLAY_MAX) + '.jpg');
+      try { await fs.promises.access(cp); const buf = await fs.promises.readFile(cp); return { ok: 1, buf, sized: true }; } catch {}
+    }
+    const buf = await fs.promises.readFile(fp);
+    return { ok: 1, buf, sized: false };
+  } catch (e) { dbg({ event: 'display_bytes_fail', path: filePath, error: e.message }); return { ok: 0, error: e.message }; }
 });
 ipcMain.handle('fs:getCachedThumbs', (_, paths) => { const r = {}; for (const p of paths) { const np = normPath(p); if (thumbMemCache.has(np)) r[p] = thumbMemCache.get(np); } return r; });
 ipcMain.handle('fs:getResourceUsage', () => getResUsage());

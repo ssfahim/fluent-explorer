@@ -3,6 +3,60 @@
 > ⚠️ **DEPLOY FIRST:** the app runs from `~/.local/share/win-explorer/`, not the git repo.
 > After `git pull`, run **`./install.sh`** (or launch from the repo with `npm start`) or you'll
 > still be running the old code.
+> **Confirm the deploy:** `head -1 ~/.cache/winex-debug.log` should show `"version":"1.9.8"`.
+> (The `winex-debug.log` in ~/Downloads is an old copy — always read the one in `~/.cache/`.)
+
+## v1.9.8 — the ACTUAL recurring crash: filmstrip thumbnails decoding in main
+1.9.7 proved memory/GPU are now flat (~10 GB free, GPU ~260 MB), yet it still died at the *same*
+~image-200 point as 1.9.6, and the crash log had **no** render/child-process-gone entry — meaning the
+**main process** itself crashed (that's why both windows die). The only native code left in main during
+a scrub was **filmstrip thumbnail generation**: `display()` called `renderFilm()` → `getThumb()` →
+`sharp`/`nativeImage` for ~30 thumbs on EVERY navigation, so a fast scrub fired hundreds of synchronous
+native decodes through your broken libvips → native crash at ~200. Fixes:
+- **Filmstrip is now debounced** — it only rebuilds/loads thumbs ~220 ms *after* you stop navigating,
+  so holding the arrow never touches the thumbnail decoder.
+- **`sharp` self-disables** after its first JPEG failure (your libvips build can't decode JPEG), so it
+  stops being a main-process crash liability; thumbnails use `nativeImage` only.
+
+Test:
+- [ ] Hold → through /mnt/movies/Pics **past 1000, ideally to the end**. It must not force-quit.
+- [ ] The filmstrip still fills in with thumbnails a moment after you stop scrubbing.
+- [ ] If it STILL dies, send `~/.cache/winex-crash.log`. A `child-process-gone`/`render-process-gone`
+      now points at a child; a bare `unclean_shutdown` (no other entry) = main-process native crash,
+      and the next suspect is `nativeImage` itself (we'd move thumbnailing fully into the renderer).
+
+## v1.9.7 — kill the *process* crash (GPU + main-process decode), not just OOM
+The 1.9.6 logs proved the renderer RAM is now flat (~165 MB) with ~10 GB free, yet it still died at
+~200 — so it was a **process crash**, not OOM: (a) the GPU process climbed to ~520 MB on the
+integrated GPU, and (b) every image was still decoded by `nativeImage` in the **main** process
+(your libvips can't do JPEG), whose native fault takes down BOTH windows. 1.9.7:
+- **No image decode in main** — the viewer now gets raw bytes and decodes in the renderer (Chromium).
+- **Software canvas** (`willReadFrequently`) — no per-image GPU texture upload; GPU process stays idle.
+- **GPU rasterization is now opt-in** (`FLUENT_GPU_RASTER=1`); default lets Chromium decide.
+- Main-process JS faults are now written to `~/.cache/winex-crash.log`.
+
+Test:
+- [ ] Hold → through /mnt/movies/Pics past 1000. In `~/.cache/winex-debug.log` the `GPU` working set
+      should now stay low/flat (not jump to ~500 MB), `Tab` stays flat, free RAM barely moves.
+- [ ] If it STILL force-quits: first run `FLUENT_NO_GPU=1 ~/.local/share/win-explorer/launch-explorer.sh`
+      and scrub again. If that survives, it's purely the GPU driver. Either way send me
+      **`~/.cache/winex-crash.log`** — it will now have a `child-process-gone`/`render-process-gone`
+      (with reason) or an `unclean_shutdown` entry pinpointing it.
+
+## v1.9.6 — REAL flat-memory fix: canvas + createImageBitmap()+close()
+The viewer no longer puts full images in an `<img>` (Chromium kept every decode in its cache →
+OOM). It now fetches display-sized JPEG **bytes**, decodes with `createImageBitmap()`, paints to a
+single reused `<canvas>`, then `close()`s the bitmap — at most ONE decoded image is alive at a time.
+- [ ] **Hold → through /mnt/movies/Pics past 1000.** It must NOT force-quit. Memory should stay
+      ~flat (the per-process `mem` lines in `~/.cache/winex-debug.log` should plateau, not climb).
+- [ ] Counter and image stay in sync the whole time (no stall-at-16 desync).
+- [ ] **Animated GIFs still animate** (they use the one fallback `<img>`, not the canvas).
+- [ ] Zoom (wheel / `+` `-` / `0`), Fit/Fill (⊡ top-right), and fullscreen all redraw correctly
+      (canvas re-fits on resize / fullscreen toggle). Image fills the viewport edge-to-edge.
+- [ ] **Crash log now works without kernel perms:** if it *ever* still force-quits, the NEXT launch
+      writes an `unclean_shutdown` entry (with the last memory sample + the image it died on) to
+      `~/.cache/winex-crash.log`. There are also `low_memory_warning` entries if free RAM dips.
+      Send me **both** `~/.cache/winex-debug.log` and `~/.cache/winex-crash.log`.
 
 ## v1.9.4 — scrub-crash root cause (cache purge) + crash evidence + Fit/Fill
 - [ ] **Hold → through your /mnt/movies/Pics folder past 300, ideally 1000+.** It should NOT crash.

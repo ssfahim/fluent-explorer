@@ -15,9 +15,15 @@ contextBridge.exposeInMainWorld('api', {
   newBatchId: () => ipcRenderer.invoke('fs:newBatchId'),
   imageUrl: p => ipcRenderer.invoke('fs:imageUrl', p),
   displayImage: p => ipcRenderer.invoke('fs:getDisplayImage', p),
-  // Purge Chromium's decoded-image cache (the WebKit MemoryCache). This is the documented lever that
-  // actually frees decoded images Chromium retains after src changes — keeps viewer memory bounded.
+  // Display-sized JPEG BYTES (not a URL). The viewer decodes these with createImageBitmap()+close()
+  // so decoded pixels never accumulate in Chromium's <img>/Skia cache (the scrub-OOM fix).
+  imageBytes: p => ipcRenderer.invoke('fs:getDisplayBytes', p),
+  // Purge Chromium's decoded-image cache (kept as a manual lever; the canvas path no longer needs it).
   clearImageCache: () => { try { webFrame.clearCache(); } catch {} },
+  // Forward renderer-side diagnostics (decode failures etc.) to the debug log in main.
+  logClient: o => ipcRenderer.send('diag:client', o),
+  // Tell main which image the viewer is on, so a crash log can say where it died.
+  reportViewer: s => ipcRenderer.send('diag:viewer', s),
   homedir: () => ipcRenderer.invoke('fs:homedir'),
   quickPaths: () => ipcRenderer.invoke('fs:quickPaths'),
   openFile: p => ipcRenderer.invoke('fs:openFile', p),
