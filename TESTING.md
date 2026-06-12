@@ -4,6 +4,19 @@
 > After `git pull`, run **`./install.sh`** (or launch from the repo with `npm start`) or you'll
 > still be running the old code.
 
+## v1.9.4 — scrub-crash root cause (cache purge) + crash evidence + Fit/Fill
+- [ ] **Hold → through your /mnt/movies/Pics folder past 300, ideally 1000+.** It should NOT crash.
+- [ ] While doing so, watch memory: open `~/.cache/winex-debug.log` afterward — there are now `mem`
+      lines every 5s with per-process working-set (look at `type:"GPU"` and `type:"Tab"`). It should
+      **sawtooth** (climb, then drop when the cache is purged) rather than climb forever.
+- [ ] If it ever still crashes, send me **both** `~/.cache/winex-debug.log` (the mem curve) and
+      `~/.cache/winex-crash.log` (reason / prior OOM-kill detection). On next launch the app scans
+      the kernel log and records if the last session was OOM-killed.
+- [ ] **Fit/Fill button** (⊡ beside the ⛶ fullscreen button): Fit = whole image; Fill = covers the
+      screen, cropping. The bottom Fit/Fill buttons match. Combine with fullscreen for edge-to-edge.
+- [ ] If you suspect the GPU, launch with `FLUENT_NO_GPU=1 ~/.local/share/win-explorer/launch-explorer.sh`
+      and compare — it disables hardware acceleration entirely.
+
 ## v1.9.3 — scrub-crash fix #2 (display-sizing) + crash logs
 - [ ] Hold **→** through a folder of large photos for a long time (300+). It should NOT crash and RAM
       should stay low/flat (the viewer now shows ≤2048px copies, not full-res decodes).

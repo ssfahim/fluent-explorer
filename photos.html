@@ -33,6 +33,8 @@ button{border:none;cursor:pointer;background:transparent;color:#e0e0e0;font-fami
 .vbg{position:absolute;inset:0;background-size:cover;background-position:center;filter:blur(28px) brightness(.45);opacity:.55;z-index:0;transition:opacity .2s;pointer-events:none}
 /* Full image: centered, contained, never upscaled past its natural size (like Windows Photos) */
 .vmain img{position:absolute;max-width:100%;max-height:100%;object-fit:contain;z-index:1;transition:opacity .12s}.vmain img.hid{opacity:0;pointer-events:none}
+/* FILL mode: cover the whole viewport (crops); FIT (default) shows the whole image */
+.vmain img.fill{width:100%;height:100%;max-width:none;max-height:none;object-fit:cover}
 .arr{position:absolute;top:50%;transform:translateY(-50%);width:48px;height:48px;border-radius:50%;background:rgba(255,255,255,.08);font-size:22px;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);z-index:5;transition:opacity .2s,background .1s}.arr:hover{background:rgba(255,255,255,.25)}.arr.l{left:20px}.arr.r{right:20px}
 /* IMMERSIVE: hide all chrome, show only the image (toggled by double-click / button / idle) */
 .viewer.chrome-hidden{cursor:none}
@@ -241,6 +243,7 @@ function buildDOM(){
       <div style="display:flex;gap:4px">
         <button class="vb" id="infoBtn" onclick="infoOn=!infoOn;updUI()">ℹ️</button>
         <button class="vb" id="filmBtn" title="Toggle filmstrip (F)" onclick="toggleFilm()">▦</button>
+        <button class="vb" id="fitBtn" title="Fit / Fill (use the whole screen)" onclick="toggleFitFill()">⊡</button>
         <button class="vb" id="immBtn" title="Fullscreen (F11 / double-click image)" onclick="toggleFullScreen()">⛶</button>
         <button class="vb" title="Back to gallery (Esc)" onclick="toGallery()">✕</button>
       </div>
@@ -258,8 +261,8 @@ function buildDOM(){
       <span class="zl" id="zl">100%</span>
       <button class="zb" onclick="zIn()">+</button>
       <div class="vsep"></div>
-      <button class="zb" onclick="zoom=1;apZ()">Fit</button>
-      <button class="zb" onclick="zoom=2;apZ()">Fill</button>
+      <button class="zb" onclick="setFitFill(false)">Fit</button>
+      <button class="zb" onclick="setFitFill(true)">Fill</button>
     </div>
     ${images.length>1?'<div class="film" id="film"></div>':''}`;
   imgA=document.getElementById('imgA');
@@ -296,7 +299,8 @@ async function display(idx){
       if(displayTarget!=null && displayTarget!==cur){ vi=displayTarget; continue; }
       const prev=useA?imgA:imgB;
       next.className=''; prev.className='hid'; useA=!useA;
-      renderFilm();
+      applyFitFill(); renderFilm();
+      bumpCacheGuard();   // purge Chromium's accumulated decode cache every N images
       if(displayTarget==null) break;
       vi=displayTarget;
     }
@@ -307,6 +311,25 @@ function showCur(){ return display(vi); }
 function goNext(){ return display(vi+1); }
 function goPrev(){ return display(vi-1); }
 function jumpTo(i){ return display(i); }
+
+// ═══ MEMORY GUARD ═══ Chromium keeps every decoded image in its WebKit/Skia cache even after we
+// swap src, and only evicts under late/unreliable memory pressure → it piles up and the OOM-killer
+// takes the whole app. webFrame.clearCache() is the documented lever that actually frees it. We call
+// it every N images (the 2 live <img> decodes survive; only the off-screen pile is purged).
+let _navCount=0;
+function bumpCacheGuard(){ if(++_navCount % 24 === 0 && window.api && api.clearImageCache) api.clearImageCache(); }
+// Idle backstop too, in case you stop on an image after a long run.
+setInterval(()=>{ if(mode==='viewer' && window.api && api.clearImageCache) api.clearImageCache(); }, 25000);
+
+// ═══ FIT / FILL ═══ Fit = whole image visible (contain). Fill = cover the screen, cropping.
+let fillMode=false;
+function applyFitFill(){
+  [imgA,imgB].forEach(i=>{ if(i) i.classList.toggle('fill', fillMode); });
+  const b=document.getElementById('fitBtn');
+  if(b){ b.textContent=fillMode?'⊟':'⊡'; b.classList.toggle('act',fillMode); b.title=fillMode?'Fill (cropped to screen) — click for Fit':'Fit (whole image) — click for Fill'; }
+}
+function toggleFitFill(){ fillMode=!fillMode; applyFitFill(); }
+function setFitFill(f){ fillMode=f; applyFitFill(); }
 
 // Cache only the next/prev URL strings (cheap) once navigation settles. We deliberately do NOT
 // pre-decode neighbours — that was creating extra full-res decodes that piled up during scrubbing.

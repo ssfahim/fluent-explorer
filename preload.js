@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer, webUtils } = require('electron');
+const { contextBridge, ipcRenderer, webUtils, webFrame } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   // Resolve a dropped File → absolute path. Electron 28 still has File.path;
   // webUtils.getPathForFile is the forward-compatible path (required from E32+).
@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld('api', {
   newBatchId: () => ipcRenderer.invoke('fs:newBatchId'),
   imageUrl: p => ipcRenderer.invoke('fs:imageUrl', p),
   displayImage: p => ipcRenderer.invoke('fs:getDisplayImage', p),
+  // Purge Chromium's decoded-image cache (the WebKit MemoryCache). This is the documented lever that
+  // actually frees decoded images Chromium retains after src changes — keeps viewer memory bounded.
+  clearImageCache: () => { try { webFrame.clearCache(); } catch {} },
   homedir: () => ipcRenderer.invoke('fs:homedir'),
   quickPaths: () => ipcRenderer.invoke('fs:quickPaths'),
   openFile: p => ipcRenderer.invoke('fs:openFile', p),

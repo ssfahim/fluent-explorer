@@ -2,15 +2,20 @@
 // This is the single biggest win for browsing slow SMB/network folders (stat = network round-trip).
 process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '64';
 
-const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net, nativeImage, clipboard, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net, nativeImage, clipboard, Menu, crashReporter } = require('electron');
 
-// Home-PC performance: offload image rasterization to the GPU and allow acceleration even when
-// Chromium has blocklisted the (often older) Linux GPU. Smoother image paint, lower CPU/RAM.
-// If a flaky driver ever causes artifacts, launch with FLUENT_NO_GPU=1 to skip these.
+// Capture native crashes (renderer/GPU/utility) as local minidumps. NOTE: a Linux OOM-killer
+// SIGKILL of the whole process is uncatchable and produces no dump — that's why "force-quit, no
+// log". We detect that case separately by scanning the kernel log on next launch (see below).
+try { crashReporter.start({ uploadToServer: false }); } catch {}
+
+// Home-PC performance: offload image rasterization to the GPU. We do NOT force acceleration onto
+// Chromium-blocklisted GPUs anymore — `ignore-gpu-blocklist` was forcing accel on Mint's integrated
+// GPU and turning accumulated image textures into GPU-process crashes. Launch with FLUENT_NO_GPU=1
+// to disable hardware acceleration entirely if a driver still misbehaves.
 if (!process.env.FLUENT_NO_GPU) {
   app.commandLine.appendSwitch('enable-gpu-rasterization');
   app.commandLine.appendSwitch('enable-zero-copy');
-  app.commandLine.appendSwitch('ignore-gpu-blocklist');
 } else {
   app.disableHardwareAcceleration();
 }
@@ -237,6 +242,8 @@ app.whenReady().then(() => {
   });
   if (isPhotosOnly) createPhotosWindow(process.argv[3] || path.join(HOME, 'Pictures'), process.argv[4] || '');
   else createExplorerWindow();
+  checkPriorOOM();        // did the last session get OOM-killed?
+  startMemorySampler();   // log the per-process memory curve for evidence
 });
 app.on('window-all-closed', () => app.quit());
 
@@ -246,6 +253,24 @@ const CRASHLOG = path.join(HOME, '.cache', 'winex-crash.log');
 function logCrash(obj){ try { fs.appendFileSync(CRASHLOG, JSON.stringify({ ...obj, date: new Date().toISOString() }) + '\n'); } catch {} }
 app.on('render-process-gone', (_e, wc, d) => logCrash({ event: 'render-process-gone', reason: d.reason, exitCode: d.exitCode, mem: getResUsage() }));
 app.on('child-process-gone', (_e, d) => logCrash({ event: 'child-process-gone', type: d.type, name: d.name, reason: d.reason, exitCode: d.exitCode, mem: getResUsage() }));
+
+// A kernel OOM-kill can't be caught in-process (SIGKILL). Detect the PREVIOUS session's OOM-kill by
+// scanning the kernel log on launch, so "silent force-quit" finally leaves a record of WHY.
+function checkPriorOOM() {
+  exec('journalctl -k -b -1 --no-pager 2>/dev/null | grep -iE "killed process.*(electron|fluent|win-explorer)" | tail -3', { timeout: 4000 }, (e, out) => {
+    if (!e && out && out.trim()) logCrash({ event: 'prior_oom_kill', detail: out.trim().split('\n') });
+  });
+}
+// Sample per-process memory (incl. GPU) every 5s into the debug log so a reproduction produces the
+// climbing curve — direct evidence of accumulation. type 'GPU'/'Tab' working set is what to watch.
+function startMemorySampler() {
+  setInterval(() => {
+    try {
+      const rows = app.getAppMetrics().map(m => ({ type: m.type, ws: Math.round(m.memory.workingSetSize / 1024) /*MB*/ }));
+      dbg({ event: 'mem', procs: rows, freeMB: Math.round(os.freemem() / 1048576) });
+    } catch {}
+  }, 5000);
+}
 
 ipcMain.handle('app:openPhotos', (_, folder, imagePath, sortedImagePaths) => {
   createPhotosWindow(folder, imagePath, sortedImagePaths);
@@ -299,7 +324,7 @@ const PERF_LOG = path.join(HOME, '.cache', 'winex-performance.log');
 let debugLogStream = null, perfLogStream = null;
 
 function dbg(obj) {
-  if (!debugLogStream) { try { debugLogStream = fs.createWriteStream(DEBUG_LOG, { flags: 'a' }); } catch { return; } debugLogStream.write(JSON.stringify({ event: 'app_start', version: 'v1.4-sharp', ts: Date.now() }) + '\n'); }
+  if (!debugLogStream) { try { debugLogStream = fs.createWriteStream(DEBUG_LOG, { flags: 'a' }); } catch { return; } let ver='?'; try { ver = require('./package.json').version; } catch {} debugLogStream.write(JSON.stringify({ event: 'app_start', version: ver, gpu: !process.env.FLUENT_NO_GPU, ts: Date.now() }) + '\n'); }
   debugLogStream.write(JSON.stringify({ ...obj, ts: Date.now() }) + '\n');
 }
 function perfLog(obj) {

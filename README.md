@@ -23,6 +23,27 @@ Both apps appear as separate windows in your taskbar. Closing Photos does not cl
 
 ---
 
+## What's new in v1.9.4 — the real scrub-crash root cause + crash logging + Fit/Fill
+
+**Root cause (evidence-based):** Chromium keeps *every* decoded image in its internal WebKit/Skia
+cache even after the `<img>` src changes, and only evicts under late/unreliable OS memory pressure.
+So decoded images piled up until the Linux **OOM-killer SIGKILLed the whole app** — which is
+uncatchable, hence *no crash log*. (Proven by the crash count scaling with image size: 128 → 161 →
+300, and by a documented Electron case where only `webFrame.clearCache()` freed the pile.)
+
+- **Memory stays bounded now.** The viewer calls `webFrame.clearCache()` every ~24 images (and on
+  idle) — the documented lever that actually frees Chromium's retained decodes. The two on-screen
+  images survive; the off-screen pile is purged. You can now page through tens of thousands of
+  images without the climb.
+- **Crashes are no longer silent.** Added `crashReporter` (local minidumps), render/GPU
+  process-gone logging, a per-process **memory sampler** that logs the climb every 5s to
+  `~/.cache/winex-debug.log`, and a startup scan of the kernel log that records if your *previous*
+  session was OOM-killed (to `~/.cache/winex-crash.log`).
+- **Removed `--ignore-gpu-blocklist`** — it was force-enabling GPU accel on Mint's integrated GPU and
+  turning accumulated textures into GPU-process crashes.
+- **Fit / Fill button** added beside Fullscreen: **Fit** shows the whole image; **Fill** covers the
+  entire screen (cropping). The bottom Fit/Fill buttons now do the same.
+
 ## What's new in v1.9.3
 
 - **Viewer no longer decodes full-resolution images** — it now shows a screen-sized (≤2048px) cached
