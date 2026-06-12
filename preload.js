@@ -53,6 +53,8 @@ contextBridge.exposeInMainWorld('api', {
   memoryCacheFolder: p => ipcRenderer.invoke('memory:cacheFolder', p),
   memorySyncFolder: p => ipcRenderer.invoke('memory:syncFolder', p),
   netMount: l => ipcRenderer.invoke('net:mount', l),
+  netProbe: l => ipcRenderer.invoke('net:probe', l),
+  netEnumShares: l => ipcRenderer.invoke('net:enumShares', l),
   netScan: () => ipcRenderer.invoke('net:scan'),
   netTest: h => ipcRenderer.invoke('net:test', h),
   netListMounted: () => ipcRenderer.invoke('net:listMounted'),

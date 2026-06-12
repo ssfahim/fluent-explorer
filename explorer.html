@@ -695,6 +695,7 @@ function showNetDlg(){document.getElementById('modals').innerHTML=`<div class="m
 <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
   <button class="tb" onclick="scanNet()" style="background:var(--hv)">🔍 Scan LAN</button>
   <button class="tb" onclick="testHost()" style="background:var(--hv)">📡 Test Connection</button>
+  <button class="tb" onclick="pickShares()" style="background:var(--hv)">📁 Show Shares</button>
   <button class="tb" onclick="showMounted()" style="background:var(--hv)">📂 Show Mounted</button>
 </div>
 <div id="netStatus" style="font-size:12px;color:var(--t3);margin-top:8px;max-height:100px;overflow:auto;white-space:pre-wrap"></div>
@@ -705,16 +706,24 @@ function netMsg(msg){const el=document.getElementById('netStatus');if(el)el.text
 async function scanNet(){netMsg('Scanning network...');const h=await api.netScan();if(h.length){netMsg('Found: '+h.map(x=>(x.hostname||'')+(x.address?' ('+x.address+')':'')).join(', '));if(h[0]&&h[0].address)document.getElementById('nHost').value=h[0].address}else netMsg('No SMB hosts found. Make sure your server has Samba/SMB enabled.')}
 async function testHost(){const host=document.getElementById('nHost').value;if(!host)return netMsg('Enter a host first');netMsg('Pinging '+host+'...');const r=await api.netTest(host);netMsg(r.ok?'✅ '+host+' is reachable!':'❌ '+host+' is not reachable. Check the IP address and make sure the server is on.')}
 async function showMounted(){netMsg('Checking mounted shares...');const m=await api.netListMounted();if(m.length){netMsg('Already mounted:\n'+m.map(x=>'• '+x.name).join('\n'));for(const x of m){if(!netLoc.locations.find(l=>l.mountPath===x.path)){netLoc.locations.push({type:'smb',name:x.name.split(',')[0].replace('smb-share:server=',''),host:'',share:'',mountPath:x.path});await api.saveCfg('networks',netLoc);renderSB()}}}else netMsg('No network shares currently mounted.')}
-async function saveNetLoc(){const loc={type:document.getElementById('nType').value,name:document.getElementById('nName').value,host:document.getElementById('nHost').value,share:document.getElementById('nShare').value,domain:document.getElementById('nDomain').value||'WORKGROUP',user:document.getElementById('nUser').value,pass:document.getElementById('nPass').value};if(!loc.host)return netMsg('❌ Host is required');netMsg('Connecting to '+loc.host+'...');const r=await api.netMount(loc);if(r.ok){loc.mountPath=r.mountPath;netLoc.locations.push(loc);await api.saveCfg('networks',netLoc);renderSB();clsMod();nav(r.mountPath)}else{netMsg('❌ Mount failed:\n\n'+r.error)}}
+function curNetLoc(){return{type:document.getElementById('nType').value,name:document.getElementById('nName').value,host:document.getElementById('nHost').value.trim(),share:document.getElementById('nShare').value.trim(),domain:document.getElementById('nDomain').value||'WORKGROUP',user:document.getElementById('nUser').value,pass:document.getElementById('nPass').value}}
+// Windows-style failure handling: show the friendly message and focus the field the user must fix
+// (password on a bad-password/account error, share on a missing-share error) so they can retry.
+function showNetFail(r){netMsg('❌ '+(r.error||'Connection failed.')+(r.detail?('\n\n'+r.detail):''));if(r.code==='auth'||r.code==='account'||r.code==='pwexpired'){const p=document.getElementById('nPass');if(p){p.focus();try{p.select()}catch{}}}else if(r.code==='noshare'){const s=document.getElementById('nShare');if(s)s.focus()}else if(r.code==='offline'){const h=document.getElementById('nHost');if(h)h.focus()}}
+let _enumShares=[];
+async function pickShares(){const host=document.getElementById('nHost').value.trim();if(!host)return netMsg('Enter a host first');netMsg('Listing shares on '+host+'...');const r=await api.netEnumShares(curNetLoc());if(!r.ok)return showNetFail(r);_enumShares=r.shares||[];if(!_enumShares.length)return netMsg('No shares found on '+host+'.');const el=document.getElementById('netStatus');el.innerHTML='Shares on '+host+' — click one:<br>'+_enumShares.map((s,i)=>`<button class="tb" style="background:var(--hv);margin:3px 3px 0 0" onclick="useShare(${i})">📁 ${s.replace(/</g,'&lt;')}</button>`).join('')}
+function useShare(i){const s=_enumShares[i];if(s==null)return;document.getElementById('nShare').value=s;if(!document.getElementById('nName').value)document.getElementById('nName').value=s;netMsg('Selected share: '+s)}
+async function saveNetLoc(){const loc=curNetLoc();if(!loc.host)return netMsg('❌ Host is required');if(loc.type==='smb'&&!loc.share)return netMsg('❌ Share name is required — click "📁 Show Shares" to list them.');netMsg('Checking '+loc.host+'...');if(loc.type==='smb'){const probe=await api.netProbe(loc);if(!probe.ok)return showNetFail(probe)}netMsg('Connecting to '+loc.host+'...');const r=await api.netMount(loc);if(r.ok){loc.mountPath=r.mountPath;netLoc.locations.push(loc);await api.saveCfg('networks',netLoc);renderSB();clsMod();nav(r.mountPath)}else showNetFail(r)}
 async function rmNet(i){netLoc.locations.splice(i,1);await api.saveCfg('networks',netLoc);renderSB()}
 async function mountNet(i){
   const loc=netLoc.locations[i];
   // If we have a saved mountPath that still exists, go directly there
   if(loc.mountPath){try{await api.stat(loc.mountPath);nav(loc.mountPath);return}catch{}}
-  // Otherwise try to mount
+  // Otherwise try to (re)mount — like Windows reconnecting a mapped drive on access.
   const r=await api.netMount(loc);
   if(r.ok){loc.mountPath=r.mountPath;await api.saveCfg('networks',netLoc);nav(r.mountPath)}
-  else alert('Mount failed:\n\n'+r.error)
+  else if(r.code==='auth'||r.code==='account'){showNetDlg();const set=(id,v)=>{const e=document.getElementById(id);if(e&&v!=null)e.value=v};set('nName',loc.name);set('nHost',loc.host);set('nShare',loc.share);set('nDomain',loc.domain);set('nUser',loc.user);showNetFail(r)}
+  else alert('Could not connect to '+(loc.name||loc.host)+':\n\n'+(r.error||'')+(r.detail?('\n\n'+r.detail):''))
 }
 
 // ═══ DRAG & DROP (pane-aware) ═══

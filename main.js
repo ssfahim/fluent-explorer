@@ -730,113 +730,218 @@ ipcMain.handle('session:load', async () => {
   try { return JSON.parse(await fs.promises.readFile(cfgFile('session'), 'utf8')); } catch { return null; }
 });
 
+// ══════════════ SMB / NETWORK SHARES (Windows "Map Network Drive"-style) ══════════════
+const nodeNet = require('net');
+
+// Quick TCP reachability — far more reliable than ICMP ping, which is commonly blocked while SMB
+// (445) is open. Windows probes 445/139 the same way to decide if a server is online.
+function tcpProbe(host, port, ms) {
+  return new Promise(resolve => {
+    const sock = new nodeNet.Socket();
+    let done = false;
+    const fin = ok => { if (done) return; done = true; try { sock.destroy(); } catch {} resolve(ok); };
+    sock.setTimeout(ms);
+    sock.once('connect', () => fin(true));
+    sock.once('timeout', () => fin(false));
+    sock.once('error', () => fin(false));
+    try { sock.connect(port, host); } catch { fin(false); }
+  });
+}
+
+// Translate smbclient / mount.cifs output into a friendly, actionable message + a stable code, so the
+// UI can react like Windows (re-prompt on a bad password, show "offline", etc.) instead of dumping
+// raw NT_STATUS / errno strings at the user.
+function classifySmbError(text) {
+  const t = (text || '').toUpperCase();
+  if (/LOGON_FAILURE|WRONG_PASSWORD|NT_STATUS_LOGON/.test(t)) return { code: 'auth', error: 'Wrong username or password.' };
+  if (/ACCOUNT_DISABLED|ACCOUNT_LOCKED_OUT|ACCOUNT_RESTRICTION|INVALID_WORKSTATION|INVALID_LOGON_HOURS/.test(t)) return { code: 'account', error: 'The account is disabled, locked, or not permitted to sign in here.' };
+  if (/PASSWORD_EXPIRED|PASSWORD_MUST_CHANGE/.test(t)) return { code: 'pwexpired', error: 'The password has expired on the server.' };
+  if (/BAD_NETWORK_NAME|NT_STATUS_OBJECT_NAME_NOT_FOUND/.test(t)) return { code: 'noshare', error: 'That share does not exist on the server.' };
+  if (/ACCESS_DENIED|MOUNT ERROR\(13\)|PERMISSION DENIED/.test(t)) return { code: 'denied', error: 'Access denied — check the username/password and that your account can open this share.' };
+  if (/CONNECTION_REFUSED|HOST_UNREACHABLE|HOST_DOWN|NETWORK_UNREACHABLE|IO_TIMEOUT|TIMED OUT|UNABLE TO CONNECT|CONNECTION_DISCONNECTED|MOUNT ERROR\(112\)|MOUNT ERROR\(115\)/.test(t)) return { code: 'offline', error: 'Could not reach the server (it may be offline, or SMB is blocked).' };
+  if (/PROTOCOL|NEGOTIATE|DIALECT|MOUNT ERROR\(95\)|NOT SUPPORTED/.test(t)) return { code: 'proto', error: 'Could not negotiate a compatible SMB version with the server.' };
+  return null;
+}
+
+// Write a mode-600 temp credentials file (consumed by both smbclient -A and mount.cifs credentials=)
+// and guarantee it's deleted. This keeps the password OUT of the process argv/environment (visible
+// in /proc to other users) — the previous code passed password=... on the mount command line.
+async function withCredsFile(user, pass, domain, fn) {
+  const tmp = path.join(os.tmpdir(), `winex-smbcreds-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const body = `username=${user || ''}\npassword=${pass || ''}\ndomain=${domain || ''}\n`;
+  await fs.promises.writeFile(tmp, body, { mode: 0o600 });
+  try { return await fn(tmp); } finally { try { await fs.promises.unlink(tmp); } catch {} }
+}
+
+// Pre-flight authentication with smbclient. Unlike mount.cifs (which collapses everything to errno
+// 13/EACCES), smbclient reports the precise NT_STATUS, so we can tell a wrong password apart from a
+// permission problem or a missing share — exactly what Windows shows in its re-prompt dialog.
+function smbProbe(loc) {
+  const guest = !loc.user;
+  return withCredsFile(loc.user, loc.pass, loc.domain, authfile => new Promise(resolve => {
+    const args = [`//${loc.host}/${loc.share}`,
+      '--option=client min protocol=SMB2', '--option=client max protocol=SMB3',
+      '-d', '0', '-c', 'quit'];
+    if (guest) args.push('-N', '-U', 'guest'); else args.push('-A', authfile);
+    const p = spawn('smbclient', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let so = '', se = '';
+    p.stdout.on('data', d => so += d); p.stderr.on('data', d => se += d);
+    const to = setTimeout(() => { try { p.kill(); } catch {} resolve({ ok: 0, code: 'offline', error: 'Timed out contacting the server.' }); }, 12000);
+    p.on('close', code => {
+      clearTimeout(to);
+      if (code === 0) return resolve({ ok: 1 });
+      const cls = classifySmbError(se + so) || { code: 'unknown', error: (se || so || 'Could not connect to the share.').trim() };
+      resolve({ ok: 0, ...cls, raw: (se || so).trim() });
+    });
+    p.on('error', e => { clearTimeout(to); resolve({ ok: 0, code: 'nosmbclient', error: 'smbclient is not installed.', raw: e.message }); });
+  }));
+}
+
+// Enumerate the (non-admin) shares on a host — what Windows shows when you type just \\server.
+ipcMain.handle('net:enumShares', async (_, loc) => {
+  if (!hasCmd('smbclient')) return { ok: 0, code: 'nosmbclient', error: 'smbclient is not installed (sudo apt install smbclient).' };
+  const reachable = await tcpProbe(loc.host, 445, 3000) || await tcpProbe(loc.host, 139, 2000);
+  if (!reachable) return { ok: 0, code: 'offline', error: `Can't reach ${loc.host} (offline or SMB blocked).` };
+  const guest = !loc.user;
+  return withCredsFile(loc.user, loc.pass, loc.domain, authfile => new Promise(resolve => {
+    const args = ['-L', `//${loc.host}`, '-g', '--option=client min protocol=SMB2', '-d', '0'];
+    if (guest) args.push('-N'); else args.push('-A', authfile);
+    const p = spawn('smbclient', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let so = '', se = '';
+    p.stdout.on('data', d => so += d); p.stderr.on('data', d => se += d);
+    const to = setTimeout(() => { try { p.kill(); } catch {} resolve({ ok: 0, code: 'offline', error: 'Timed out listing shares.' }); }, 12000);
+    p.on('close', () => {
+      clearTimeout(to);
+      const shares = [];
+      for (const line of so.split('\n')) {
+        const parts = line.split('|');                       // "Disk|name|comment"
+        if (parts[0] === 'Disk' && parts[1] && !parts[1].endsWith('$')) shares.push(parts[1]);
+      }
+      if (shares.length) return resolve({ ok: 1, shares });
+      const cls = classifySmbError(se + so);
+      if (cls) return resolve({ ok: 0, ...cls });
+      resolve({ ok: 0, code: 'noshares', error: 'No shares found on this host.' });
+    });
+    p.on('error', e => { clearTimeout(to); resolve({ ok: 0, error: e.message }); });
+  }));
+});
+
+// Pre-flight check the renderer calls before mounting → precise, Windows-like feedback.
+ipcMain.handle('net:probe', async (_, loc) => {
+  if (!loc || loc.type !== 'smb') return { ok: 1 };
+  const reachable = await tcpProbe(loc.host, 445, 3000) || await tcpProbe(loc.host, 139, 2000);
+  if (!reachable) return { ok: 0, code: 'offline', error: `Can't reach ${loc.host}. The server may be offline, or SMB (port 445) is blocked.` };
+  if (!loc.share) return { ok: 1, reachable: true };          // host is up; share enumeration is separate
+  if (!hasCmd('smbclient')) return { ok: 1, reachable: true, note: 'smbclient not installed — skipping auth pre-check.' };
+  return smbProbe(loc);
+});
+
+function runProc(cmd, args, ms) {
+  return new Promise(resolve => {
+    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let so = '', se = '';
+    p.stdout.on('data', d => so += d); p.stderr.on('data', d => se += d);
+    const to = setTimeout(() => { try { p.kill(); } catch {} resolve({ ok: 0, error: 'mount timed out (server slow or offline)' }); }, ms);
+    p.on('close', code => { clearTimeout(to); code === 0 ? resolve({ ok: 1 }) : resolve({ ok: 0, error: (se || so || `${cmd} exited ${code}`).trim() }); });
+    p.on('error', e => { clearTimeout(to); resolve({ ok: 0, error: `${cmd} not found: ${e.message}` }); });
+  });
+}
+
+// PRIMARY backend: kernel mount.cifs (real path, fast, full SMB3/sec control). Credentials go through
+// a 600 file (never argv). We try dialects high→low so the server picks what it supports, emulating
+// Windows' auto-negotiation (a hardcoded vers=3.0 fails on servers that only accept 3.1.1 or 2.1).
+async function mountCifs(loc) {
+  if (!hasCmd('mount.cifs')) return { ok: 0, code: 'nocifs', error: 'cifs-utils is not installed (sudo apt install cifs-utils).' };
+  const host = loc.host, share = loc.share, guest = !loc.user;
+  const uid = process.getuid(), gid = process.getgid();
+  const mountPoint = `/tmp/winex-smb-${host}-${share.replace(/[^a-zA-Z0-9]/g, '_')}`;
+  try { fs.mkdirSync(mountPoint, { recursive: true }); } catch {}
+  const perf = `uid=${uid},gid=${gid},iocharset=utf8,cache=loose,actimeo=30,rsize=1048576,wsize=1048576`;
+
+  return withCredsFile(loc.user, loc.pass, loc.domain || 'WORKGROUP', async credfile => {
+    let lastErr = 'mount failed';
+    for (const vers of ['3.1.1', '3.0', '2.1']) {
+      const opts = guest
+        ? `guest,vers=${vers},${perf}`
+        : `credentials=${credfile},vers=${vers},sec=ntlmssp,${perf}`;
+      const args = ['-t', 'cifs', `//${host}/${share}`, mountPoint, '-o', opts];
+      let r = await runProc('mount', args, 25000);
+      if (!r.ok && hasCmd('pkexec') && /only root|permission|must be|not permitted|operation not permitted/i.test(r.error || '')) {
+        r = await runProc('pkexec', ['mount', ...args], 60000); // GUI sudo prompt for the privileged step
+      }
+      if (r.ok) return { ok: 1, mountPath: mountPoint, via: `cifs/${vers}` };
+      lastErr = r.error;
+      const cls = classifySmbError(r.error);
+      // Auth/permission/share errors won't be fixed by trying a different dialect — stop now.
+      if (cls && ['auth', 'denied', 'noshare', 'account', 'pwexpired'].includes(cls.code)) return { ok: 0, ...cls, raw: r.error };
+    }
+    const cls = classifySmbError(lastErr) || { code: 'proto', error: 'Could not mount the share (no compatible SMB dialect / mount.cifs failed).' };
+    return { ok: 0, ...cls, raw: lastErr };
+  });
+}
+
+// FALLBACK backend: GVFS (gio) — userspace, no root prompt, but slower with awkward /run/user paths.
+function mountGio(loc, gvfsGuesses, uid) {
+  const { host, share, domain } = loc, user = loc.user || '', pass = loc.pass || '';
+  const smbUrl = `smb://${host}/${share}`;
+  return new Promise(resolve => {
+    const args = ['mount']; if (!user) args.push('-a'); args.push(smbUrl);
+    const proc = spawn('gio', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let so = '', se = '';
+    proc.stdout.on('data', d => so += d); proc.stderr.on('data', d => se += d);
+    if (user) { try { proc.stdin.write(`${user}\n${domain || 'WORKGROUP'}\n${pass}\n`); proc.stdin.end(); } catch {} }
+    const to = setTimeout(() => { try { proc.kill(); } catch {} resolve({ ok: 0, code: 'offline', error: 'gio mount timed out (15s).' }); }, 15000);
+    proc.on('close', code => {
+      clearTimeout(to);
+      if (code === 0 || /already mounted/i.test(se)) {
+        for (const mp of gvfsGuesses) { try { fs.accessSync(mp); return resolve({ ok: 1, mountPath: mp, via: 'gvfs' }); } catch {} }
+        try {
+          const base = `/run/user/${uid}/gvfs`;
+          const m = fs.readdirSync(base).find(e => e.includes(host) || e.includes(host.toLowerCase()));
+          if (m) return resolve({ ok: 1, mountPath: path.join(base, m), via: 'gvfs' });
+        } catch {}
+        return resolve({ ok: 0, code: 'unknown', error: 'gio mounted but the path was not found under /run/user/' + uid + '/gvfs/.' });
+      }
+      const cls = classifySmbError(se + so) || { code: 'unknown', error: (se || so || `gio mount failed (code ${code})`).trim() };
+      resolve({ ok: 0, ...cls });
+    });
+    proc.on('error', e => { clearTimeout(to); resolve({ ok: 0, code: 'nogio', error: 'gio not found: ' + e.message }); });
+  });
+}
+
+async function mountSmb(loc) {
+  const host = loc.host, share = loc.share, user = loc.user || '';
+  const uid = process.getuid();
+  if (!host) return { ok: 0, code: 'badinput', error: 'A server host/IP is required.' };
+  if (!share) return { ok: 0, code: 'badinput', error: 'A share name is required (try "Show shares").' };
+
+  // Fast offline check up front so we fail in ~3s instead of hanging on mount timeouts.
+  const reachable = await tcpProbe(host, 445, 3000) || await tcpProbe(host, 139, 2000);
+  if (!reachable) return { ok: 0, code: 'offline', error: `Can't reach ${host}. The server may be offline, or SMB (port 445) is blocked.` };
+
+  // Reuse an existing GVFS mount if one is already there.
+  const gvfsGuesses = [
+    `/run/user/${uid}/gvfs/smb-share:server=${host},share=${share}`,
+    `/run/user/${uid}/gvfs/smb-share:server=${host.toLowerCase()},share=${share}`,
+    `/run/user/${uid}/gvfs/smb-share:server=${host},share=${share},user=${user}`,
+  ];
+  for (const mp of gvfsGuesses) { try { await fs.promises.access(mp); return { ok: 1, mountPath: mp, via: 'gvfs-existing' }; } catch {} }
+
+  // PRIMARY: mount.cifs. FALLBACK: gio/GVFS.
+  const cifs = await mountCifs(loc);
+  if (cifs.ok) return cifs;
+  const gio = await mountGio(loc, gvfsGuesses, uid);
+  if (gio.ok) return gio;
+
+  // Prefer the more specific reason for the UI (auth/denied/noshare over a generic gio failure).
+  const specific = (cifs.code && !['nocifs', 'proto', 'unknown'].includes(cifs.code)) ? cifs : gio;
+  return { ok: 0, code: specific.code || 'unknown', error: specific.error,
+    detail: `mount.cifs: ${cifs.error}\nGVFS: ${gio.error}` };
+}
+
 // Network
 ipcMain.handle('net:mount', async (_, loc) => {
-  if (loc.type === 'smb') {
-    const host = loc.host;
-    const share = loc.share;
-    const user = loc.user || '';
-    const pass = loc.pass || '';
-    const domain = loc.domain || 'WORKGROUP';
-    const smbUrl = `smb://${host}/${share}`;
-
-    // First check if already mounted via gvfs
-    const uid = process.getuid();
-    const possiblePaths = [
-      `/run/user/${uid}/gvfs/smb-share:server=${host},share=${share}`,
-      `/run/user/${uid}/gvfs/smb-share:server=${host.toLowerCase()},share=${share}`,
-      `/run/user/${uid}/gvfs/smb-share:server=${host},share=${share},user=${user}`,
-    ];
-    for (const mp of possiblePaths) {
-      try { await fs.promises.access(mp); return { ok: 1, mountPath: mp }; } catch {}
-    }
-
-    // Method 1: gio mount with credentials piped via stdin
-    // gio mount prompts: User [user]: / Domain [WORKGROUP]: / Password:
-    const gioResult = await new Promise(resolve => {
-      let args = ['mount'];
-      if (!user) args.push('-a'); // anonymous if no user
-      args.push(smbUrl);
-
-      const proc = spawn('gio', args, { stdio: ['pipe', 'pipe', 'pipe'] });
-      let stdout = '', stderr = '';
-      proc.stdout.on('data', d => stdout += d.toString());
-      proc.stderr.on('data', d => stderr += d.toString());
-
-      if (user) {
-        // Pipe credentials in the format gio expects:
-        // echo -e "user\ndomain\npassword\n" | gio mount smb://...
-        proc.stdin.write(user + '\n');
-        proc.stdin.write(domain + '\n');
-        proc.stdin.write(pass + '\n');
-        proc.stdin.end();
-      }
-
-      const timeout = setTimeout(() => { try { proc.kill(); } catch {} resolve({ ok: 0, error: 'Connection timed out (15s)' }); }, 15000);
-
-      proc.on('close', code => {
-        clearTimeout(timeout);
-        if (code === 0) {
-          // Find the actual mount path
-          for (const mp of possiblePaths) {
-            try { fs.accessSync(mp); resolve({ ok: 1, mountPath: mp }); return; } catch {}
-          }
-          // Try listing gvfs mounts to find it
-          try {
-            const gvfsBase = `/run/user/${uid}/gvfs`;
-            const entries = fs.readdirSync(gvfsBase);
-            const match = entries.find(e => e.includes(host) || e.includes(host.toLowerCase()));
-            if (match) { resolve({ ok: 1, mountPath: path.join(gvfsBase, match) }); return; }
-          } catch {}
-          resolve({ ok: 0, error: 'Mounted but could not find gvfs path. Check /run/user/' + uid + '/gvfs/' });
-        } else {
-          let errMsg = stderr.trim() || stdout.trim() || 'gio mount failed (code ' + code + ')';
-          // Clean up common error messages
-          if (errMsg.includes('Location is already mounted')) {
-            // It's already mounted, find the path
-            for (const mp of possiblePaths) {
-              try { fs.accessSync(mp); resolve({ ok: 1, mountPath: mp }); return; } catch {}
-            }
-          }
-          resolve({ ok: 0, error: errMsg, method: 'gio' });
-        }
-      });
-      proc.on('error', e => { clearTimeout(timeout); resolve({ ok: 0, error: 'gio not found: ' + e.message }); });
-    });
-
-    if (gioResult.ok) return gioResult;
-
-    // Method 2: kernel mount.cifs — much faster than gvfs (50-60 MB/s vs 5-10 MB/s) but needs root.
-    // We try pkexec (GUI password prompt) so a desktop user can opt into the fast mount.
-    // Tuned options: modern SMB dialect, loose metadata caching, 30s attr cache, 1 MiB I/O.
-    const mountPoint = `/tmp/winex-smb-${host}-${share.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    try { fs.mkdirSync(mountPoint, { recursive: true }); } catch {}
-
-    const gid = process.getgid();
-    const perf = `uid=${uid},gid=${gid},iocharset=utf8,vers=3.0,cache=loose,actimeo=30,rsize=1048576,wsize=1048576`;
-    const opts = user
-      ? `username=${user},password=${pass},domain=${domain},${perf}`
-      : `guest,${perf}`;
-    // Arg arrays (no shell) → credentials can't inject shell commands.
-    const mountArgs = ['mount', '-t', 'cifs', `//${host}/${share}`, mountPoint, '-o', opts];
-
-    const runMount = (cmd, args) => new Promise(resolve => {
-      const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-      let so = '', se = '';
-      p.stdout.on('data', d => so += d); p.stderr.on('data', d => se += d);
-      const to = setTimeout(() => { try { p.kill(); } catch {} resolve({ ok: 0, error: 'mount timed out' }); }, 20000);
-      p.on('close', code => { clearTimeout(to); code === 0 ? resolve({ ok: 1, mountPath: mountPoint }) : resolve({ ok: 0, error: (se || so || `${cmd} exited ${code}`).trim() }); });
-      p.on('error', e => { clearTimeout(to); resolve({ ok: 0, error: `${cmd} not found: ${e.message}` }); });
-    });
-
-    // Try direct mount first (works if already root / has CAP_SYS_ADMIN), then pkexec for a GUI prompt.
-    let cifsResult = await runMount('mount', mountArgs);
-    if (!cifsResult.ok && hasCmd('pkexec')) cifsResult = await runMount('pkexec', mountArgs);
-    if (cifsResult.ok) return cifsResult;
-
-    // Return combined error info
-    return { ok: 0, error: `gio (gvfs): ${gioResult.error}\n\nKernel CIFS mount: ${cifsResult.error}\n\nTips:\n- Check if the server is reachable: ping ${host}\n- Check if smbclient works: smbclient -L ${host} -U ${user || 'guest'}%${pass}\n- Install cifs-utils for the fast mount: sudo apt install cifs-utils\n- For guest access, leave username empty` };
-  }
+  if (loc.type === 'smb') return mountSmb(loc);
 
   if (loc.type === 'nfs') {
     const mountPoint = `/tmp/winex-nfs-${loc.host}-${(loc.share||'').replace(/[^a-zA-Z0-9]/g, '_')}`;

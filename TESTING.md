@@ -3,8 +3,28 @@
 > ⚠️ **DEPLOY FIRST:** the app runs from `~/.local/share/win-explorer/`, not the git repo.
 > After `git pull`, run **`./install.sh`** (or launch from the repo with `npm start`) or you'll
 > still be running the old code.
-> **Confirm the deploy:** `head -1 ~/.cache/winex-debug.log` should show `"version":"1.9.8"`.
+> **Confirm the deploy:** `head -1 ~/.cache/winex-debug.log` should show `"version":"1.10.0"`.
 > (The `winex-debug.log` in ~/Downloads is an old copy — always read the one in `~/.cache/`.)
+
+## v1.10.0 — SMB auth overhaul (core), Windows "Map Network Drive" feel
+Requires `smbclient` + `cifs-utils` (the installer adds both). The old `gio mount` stdin-credential
+piping was unreliable; auth now uses a proper pre-flight + kernel mount with credentials files.
+- [ ] **Add Network Location** → type host/IP, username, password (leave user empty for guest).
+- [ ] **📁 Show Shares** lists the server's shares (admin `$` shares hidden, like Windows); click one
+      to fill the Share field. Wrong password here shows "Wrong username or password."
+- [ ] **Add & Connect** with a correct password mounts and opens the share (fast — kernel mount.cifs;
+      you may get a one-time pkexec password prompt for the privileged mount step).
+- [ ] **Bad password** → it does NOT dump raw errors; it says "Wrong username or password." and puts
+      the cursor back in the password box. **Wrong share** → "That share does not exist." **Server off**
+      → "Can't reach <host>…" within ~3 s (TCP 445 probe, not ping).
+- [ ] Reconnecting a saved share that now needs a different password re-opens the dialog pre-filled.
+- [ ] Security check: while a share is mounting, `ps aux | grep mount.cifs` should **not** show the
+      password (it now goes through a temp 600 credentials file, not the command line).
+- [ ] Guest shares (empty username) still mount.
+
+> Still TODO (next iteration, agreed): store passwords in the keyring via `secret-tool` (today they're
+> still in `~/.config/winex-networks.json`), "reconnect at sign-in" auto-mount on launch, sidebar
+> online/offline indicator, and the full Windows-style dialog redesign.
 
 ## v1.9.8 — the ACTUAL recurring crash: filmstrip thumbnails decoding in main
 1.9.7 proved memory/GPU are now flat (~10 GB free, GPU ~260 MB), yet it still died at the *same*
