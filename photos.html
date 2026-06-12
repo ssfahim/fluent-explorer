@@ -79,6 +79,9 @@ body.fs .titlebar, body.fs .bar, body.fs .statusbar{display:none}
 let mode='gallery', images=[], vi=0, zoom=1, infoOn=false, curFolder='';
 let vcanvas=null, vctx=null, gifImg=null, liveBM=null, preloaded={}, thumbUrls={};
 let galCycle=0;
+// Pan offset (in canvas backing-store pixels, relative to the centered position). Cursor-anchored
+// zoom and drag-to-pan write here; drawBM() clamps it so the image always covers the viewport.
+let panX=0, panY=0, panning=false, panStart=null;
 const params=new URLSearchParams(location.search);
 
 async function init(){
@@ -197,7 +200,7 @@ async function deepScan(){
 
 // ═══ VIEWER ═══
 async function showViewer(idx){
-  mode='viewer'; vi=idx; zoom=1; infoOn=false; chromeHidden=false;
+  mode='viewer'; vi=idx; zoom=1; panX=0; panY=0; infoOn=false; chromeHidden=false;
   document.getElementById('gallery').style.display='none';
   document.getElementById('viewer').className='viewer on';
   renderBar(); buildDOM(); await showCur(); preloadNear();
@@ -275,9 +278,29 @@ function buildDOM(){
   vctx=vcanvas.getContext('2d',{ willReadFrequently:true, alpha:false });
   gifImg=document.getElementById('gifImg');
   liveBM=null;
-  // Native drag from the viewer
+  // Native drag from the viewer (only fires when the image isn't zoomed-in — drawBM() sets
+  // canvas.draggable=false while pannable so the pointer handlers below take over instead).
   vcanvas.addEventListener('dragstart', e => { e.preventDefault(); api.nativeDrag(images[vi].path); });
   gifImg.addEventListener('dragstart', e => { e.preventDefault(); api.nativeDrag(images[vi].path); });
+
+  // DRAG-TO-PAN — when zoomed in past the viewport, click-drag moves the image (cursor shows grab/
+  // grabbing). Uses pointer capture so the drag survives the cursor leaving the canvas.
+  vcanvas.addEventListener('pointerdown', e => {
+    if(e.button!==0 || !isPannable()) return;
+    panning=true; panStart={ x:e.clientX, y:e.clientY, px:panX, py:panY };
+    try{ vcanvas.setPointerCapture(e.pointerId); }catch{}
+    vcanvas.style.cursor='grabbing'; e.preventDefault();
+  });
+  vcanvas.addEventListener('pointermove', e => {
+    if(!panning) return;
+    const dpr=window.devicePixelRatio||1;
+    panX=panStart.px+(e.clientX-panStart.x)*dpr;
+    panY=panStart.py+(e.clientY-panStart.y)*dpr;
+    drawBM();
+  });
+  const endPan = e => { if(!panning) return; panning=false; try{ vcanvas.releasePointerCapture(e.pointerId); }catch{} vcanvas.style.cursor=isPannable()?'grab':''; };
+  vcanvas.addEventListener('pointerup', endPan);
+  vcanvas.addEventListener('pointercancel', endPan);
 }
 
 // ═══ FLAT-MEMORY CANVAS RENDERER ═══════════════════════════════════════════════════════════════
@@ -298,21 +321,69 @@ function fitCanvas(){
   if(vcanvas.width!==bw||vcanvas.height!==bh){ vcanvas.width=bw; vcanvas.height=bh; }
   return true;
 }
-// Draw the currently-live bitmap with the active fit/fill + zoom. Centered, no pan (matches before).
+// Base scale = the "fit" (or "fill") scale at zoom=1, before the user's zoom multiplier.
+// Fit = contain but never enlarge past natural size; Fill = cover (crops).
+function baseScale(){
+  if(!liveBM||!vcanvas) return 1;
+  const dpr=window.devicePixelRatio||1;
+  const cw=vcanvas.width, ch=vcanvas.height, iw=liveBM.width, ih=liveBM.height;
+  const contain=Math.min(cw/iw, ch/ih), cover=Math.max(cw/iw, ch/ih);
+  return fillMode ? cover : Math.min(contain, dpr);
+}
+// Clamp pan so you can't drag the image past its edges — when the image is larger than the viewport
+// in an axis you can pan within ±(overflow/2); when it fits, that axis stays centered. Matches the
+// "the viewport always stays covered" feel of Windows Photos.
+function clampPan(scale){
+  const cw=vcanvas.width, ch=vcanvas.height, iw=liveBM.width, ih=liveBM.height;
+  const ox=(iw*scale-cw), oy=(ih*scale-ch);
+  panX = ox<=0 ? 0 : Math.max(-ox/2, Math.min(ox/2, panX));
+  panY = oy<=0 ? 0 : Math.max(-oy/2, Math.min(oy/2, panY));
+}
+// True when the image overflows the viewport at the current zoom (so dragging it makes sense).
+function isPannable(){
+  if(!liveBM||!vcanvas||(gifImg&&!gifImg.classList.contains('hid'))) return false;
+  const s=baseScale()*zoom;
+  return liveBM.width*s>vcanvas.width+1 || liveBM.height*s>vcanvas.height+1;
+}
+// Draw the currently-live bitmap with the active fit/fill + zoom + pan, then reflect pannability on
+// the cursor and toggle native-drag (only drag the file out when the image isn't pannable).
 function drawBM(){
   if(!liveBM||!vctx||!vcanvas) return;
-  const dpr=window.devicePixelRatio||1;
   const cw=vcanvas.width, ch=vcanvas.height;
   const iw=liveBM.width, ih=liveBM.height;
-  const contain=Math.min(cw/iw, ch/ih);
-  const cover=Math.max(cw/iw, ch/ih);
-  // Fit = contain but never enlarge past natural size; Fill = cover (crops). Then apply zoom.
-  let scale = (fillMode ? cover : Math.min(contain, dpr)) * zoom;
+  const scale=baseScale()*zoom;
+  clampPan(scale);
   const dw=iw*scale, dh=ih*scale;
-  const dx=(cw-dw)/2, dy=(ch-dh)/2;
+  const dx=(cw-dw)/2+panX, dy=(ch-dh)/2+panY;
   vctx.clearRect(0,0,cw,ch);
   vctx.imageSmoothingEnabled=true; vctx.imageSmoothingQuality='high';
   vctx.drawImage(liveBM, dx, dy, dw, dh);
+  const pan=isPannable();
+  vcanvas.draggable=!pan; // native drag-out only when not zoomed in
+  if(!panning) vcanvas.style.cursor=pan?'grab':'';
+}
+// Cursor-anchored zoom: keep the image point under (cx,cy) — in canvas backing pixels — fixed as the
+// zoom changes. cx/cy default to the viewport centre (used by the +/− buttons and keyboard).
+function zoomAt(nz, cx, cy){
+  nz=Math.max(0.25, Math.min(8, nz));
+  if(!liveBM||!vcanvas){ // GIF path (no canvas bitmap): plain scale, no anchor/pan
+    zoom=nz; if(gifImg && !gifImg.classList.contains('hid')) gifImg.style.transform=`scale(${zoom})`;
+    updZl(); return;
+  }
+  const cw=vcanvas.width, ch=vcanvas.height, iw=liveBM.width, ih=liveBM.height;
+  if(cx==null) cx=cw/2; if(cy==null) cy=ch/2;
+  const bs=baseScale(), s0=bs*zoom, s1=bs*nz;
+  const dx0=(cw-iw*s0)/2+panX, dy0=(ch-ih*s0)/2+panY;
+  const ipx=(cx-dx0)/s0, ipy=(cy-dy0)/s0;       // image-space point under the cursor
+  panX=(cx-ipx*s1)-(cw-iw*s1)/2;                 // solve for the pan that keeps it under the cursor
+  panY=(cy-ipy*s1)-(ch-ih*s1)/2;
+  zoom=nz; drawBM(); updZl();
+}
+function updZl(){ const zl=document.getElementById('zl'); if(zl) zl.textContent=Math.round(zoom*100)+'%'; }
+// Convert a mouse event to canvas backing-store coordinates (CSS px × devicePixelRatio).
+function evToCanvas(e){
+  const r=vcanvas.getBoundingClientRect(), dpr=window.devicePixelRatio||1;
+  return { x:(e.clientX-r.left)*dpr, y:(e.clientY-r.top)*dpr };
 }
 
 // SERIALIZED navigation — only ONE decode is ever in flight. Holding the arrow advances the index
@@ -321,7 +392,7 @@ let displayBusy=false, displayTarget=null;
 async function display(idx){
   if(!images.length)return;
   vi=((idx%images.length)+images.length)%images.length;
-  zoom=1;
+  zoom=1; panX=0; panY=0; // each image opens at fit, re-centred (matches Windows Photos)
   updUI(); // instant counter/name feedback, even while a previous decode is still running
   if(displayBusy){ displayTarget=vi; return; } // a decode is in flight — keep only the latest target
   displayBusy=true;
@@ -375,6 +446,7 @@ window.addEventListener('resize', ()=>{ if(mode==='viewer'){ fitCanvas(); drawBM
 let fillMode=false;
 function applyFitFill(){
   if(gifImg) gifImg.classList.toggle('fill', fillMode);
+  panX=0; panY=0; // re-centre when switching fit/fill — the base scale just changed
   drawBM(); // raster path redraws with the new scale
   const b=document.getElementById('fitBtn');
   if(b){ b.textContent=fillMode?'⊟':'⊡'; b.classList.toggle('act',fillMode); b.title=fillMode?'Fill (cropped to screen) — click for Fit':'Fit (whole image) — click for Fill'; }
@@ -444,9 +516,10 @@ async function loadFilmstripThumbs(){
   }
 }
 
-function zIn(){ zoom=Math.min(zoom+.25,5); apZ(); }
-function zOut(){ zoom=Math.max(zoom-.25,.25); apZ(); }
-function apZ(){ if(gifImg && !gifImg.classList.contains('hid')) gifImg.style.transform=`scale(${zoom})`; drawBM(); const zl=document.getElementById('zl'); if(zl) zl.textContent=Math.round(zoom*100)+'%'; }
+// Buttons / keyboard zoom around the viewport centre (multiplicative — geometric steps feel native).
+function zIn(){ zoomAt(zoom*1.25); }
+function zOut(){ zoomAt(zoom*0.8); }
+function resetZoom(){ zoom=1; panX=0; panY=0; if(gifImg && !gifImg.classList.contains('hid')) gifImg.style.transform='scale(1)'; drawBM(); updZl(); }
 
 function toGallery(){ mode='gallery'; chromeHidden=false; clearTimeout(idleTmr); document.getElementById('gallery').style.display=''; document.getElementById('viewer').className='viewer'; renderBar(); updStat(); }
 async function changeFolder(){ const f=await api.pickFolder(); if(f){ curFolder=f; preloaded={}; thumbUrls={}; images=await api.listImages(curFolder); renderGallery(); renderBar(); updStat(); updTitle(); } }
@@ -485,18 +558,24 @@ document.addEventListener('keydown', e => {
     else if(e.key===' '){ e.preventDefault(); goNext(); }
     else if(e.key==='+'||e.key==='='){ zIn(); }
     else if(e.key==='-'||e.key==='_'){ zOut(); }
-    else if(e.key==='0'){ zoom=1; apZ(); }
+    else if(e.key==='0'){ resetZoom(); }
     else if(e.key==='f'||e.key==='F'){ toggleFilm(); }
     else if(e.key==='i'||e.key==='I'){ infoOn=!infoOn; updUI(); }
     else if(e.key==='Delete'){ e.preventDefault(); deleteCurrent(); }
     else if(e.key==='F11'){ e.preventDefault(); toggleFullScreen(); }
   }
 });
-// Mouse wheel = zoom in/out (like Windows Photos). Use the arrows/chevrons to change image.
+// Wheel = zoom in/out, anchored at the cursor (like Windows Photos). A precision-touchpad PINCH
+// arrives as a wheel event with ctrlKey=true and small continuous deltas — we treat that as a smooth
+// (exponential) zoom and preventDefault so Chromium doesn't zoom the whole page. A notched mouse
+// wheel uses geometric ×1.25/÷1.25 steps. Both keep the point under the cursor fixed.
 document.addEventListener('wheel', e => {
   if(mode!=='viewer') return;
   e.preventDefault();
-  (e.deltaY<0 ? zIn : zOut)();
+  const c = (vcanvas && !vcanvas.classList.contains('hid')) ? evToCanvas(e) : {x:null,y:null};
+  const nz = e.ctrlKey ? zoom*Math.exp(-e.deltaY*0.01)        // pinch — smooth
+                       : zoom*(e.deltaY<0 ? 1.25 : 0.8);      // wheel notch — stepped
+  zoomAt(nz, c.x, c.y);
 }, { passive:false });
 
 function fmt(b){if(!b)return'—';if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';if(b<1073741824)return(b/1048576).toFixed(1)+' MB';return(b/1073741824).toFixed(1)+' GB'}
