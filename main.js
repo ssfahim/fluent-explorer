@@ -371,6 +371,75 @@ ipcMain.handle('fs:scanImages', async (_, dirPath, maxDepth) => {
   await walk(dirPath, 0); return images;
 });
 
+// ══════════════ RECURSIVE STREAMING SEARCH ══════════════
+// Windows Explorer searches the current folder + all subfolders and streams matches into the view as
+// it finds them (with a progress bar), rather than blocking until the whole tree is walked. We mirror
+// that: a breadth-first walk (shallow = more-relevant results first), matches pushed back over IPC in
+// small throttled batches, cancellable at any time, and bounded so a huge tree can't run away.
+const activeSearches = new Set();
+ipcMain.on('search:cancel', (_e, { id }) => activeSearches.delete(id));
+ipcMain.on('search:start', async (e, { id, root, query, opts }) => {
+  const wc = e.sender;
+  const send = (ch, payload) => { try { if (!wc.isDestroyed()) wc.send(ch, { id, ...payload }); } catch {} };
+  const q = (query || '').trim();
+  if (!q || !root) { send('search:done', { count: 0, scanned: 0, capped: false }); return; }
+  activeSearches.add(id);
+
+  // `*`/`?` → glob on the whole name; otherwise case-insensitive substring (the common case).
+  const useGlob = /[*?]/.test(q);
+  const rx = useGlob ? new RegExp('^' + q.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i') : null;
+  const ql = q.toLowerCase();
+  const match = name => useGlob ? rx.test(name) : name.toLowerCase().includes(ql);
+
+  const MAX_RESULTS = (opts && opts.maxResults) || 5000;
+  const MAX_DEPTH   = (opts && opts.maxDepth)   || 16;
+  let count = 0, scanned = 0, capped = false, lastFlush = 0;
+  let batch = [];
+  const flush = force => {
+    if (!batch.length) return;
+    if (force || batch.length >= 40 || (lastFlush && Date.now() - lastFlush > 120)) {
+      send('search:result', { items: batch }); batch = []; lastFlush = Date.now();
+    }
+  };
+
+  const queue = [{ dir: root, depth: 0 }];
+  try {
+    while (queue.length) {
+      if (!activeSearches.has(id)) return; // cancelled
+      const { dir, depth } = queue.shift();
+      let dirents;
+      try {
+        // Per-directory timeout so one dead SMB handle can't stall the whole search.
+        dirents = await Promise.race([
+          fs.promises.readdir(dir, { withFileTypes: true }),
+          new Promise((_, r) => setTimeout(() => r(new Error('readdir timeout')), 8000)),
+        ]);
+      } catch { continue; }
+      for (const d of dirents) {
+        if (!activeSearches.has(id)) return;
+        if (d.name.startsWith('.')) continue;
+        scanned++;
+        const full = path.join(dir, d.name);
+        const isDir = d.isDirectory();
+        if (match(d.name)) {
+          const ext = path.extname(d.name).toLowerCase().slice(1);
+          batch.push({ name: d.name, path: full, dir, isDirectory: isDir, isImage: IMG_EXT.has(ext), isVideo: VID_EXT.has(ext), ext });
+          if (++count >= MAX_RESULTS) { capped = true; break; }
+        }
+        if (isDir && depth < MAX_DEPTH) queue.push({ dir: full, depth: depth + 1 });
+      }
+      flush(false);
+      send('search:progress', { scanned, count, current: dir });
+      if (capped) break;
+      await new Promise(r => setImmediate(r)); // yield so cancel messages are processed promptly
+    }
+  } finally {
+    flush(true);
+    activeSearches.delete(id);
+    send('search:done', { count, scanned, capped });
+  }
+});
+
 // ══════════════ THUMBNAILS v2 — SHARP-BASED, NON-BLOCKING ══════════════
 // sharp uses libvips: processes in worker threads, constant memory (~50MB),
 // never loads full image into RAM. 10-50x faster than nativeImage.

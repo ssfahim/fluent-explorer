@@ -7,6 +7,13 @@ contextBridge.exposeInMainWorld('api', {
   readdirPaged: (p, off, lim) => ipcRenderer.invoke('fs:readdirPaged', p, off, lim),
   listImages: p => ipcRenderer.invoke('fs:listImages', p),
   scanImages: (p, d) => ipcRenderer.invoke('fs:scanImages', p, d),
+  // Recursive streaming search: start/cancel fire-and-forget; results arrive via the on* callbacks,
+  // each message tagged with the search id so the renderer can ignore a cancelled/stale search.
+  searchStart: (id, root, query, opts) => ipcRenderer.send('search:start', { id, root, query, opts }),
+  searchCancel: id => ipcRenderer.send('search:cancel', { id }),
+  onSearchResult: cb => ipcRenderer.on('search:result', (_, m) => cb(m)),
+  onSearchProgress: cb => ipcRenderer.on('search:progress', (_, m) => cb(m)),
+  onSearchDone: cb => ipcRenderer.on('search:done', (_, m) => cb(m)),
   getThumb: p => ipcRenderer.invoke('fs:getThumb', p),
   getVideoThumb: p => ipcRenderer.invoke('fs:getVideoThumb', p),
   getCachedThumbs: paths => ipcRenderer.invoke('fs:getCachedThumbs', paths),

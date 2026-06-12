@@ -31,6 +31,11 @@ select{font-family:inherit;color:var(--tx);background:var(--ib);border:1px solid
 .ps{cursor:pointer;padding:2px 4px;border-radius:3px;color:var(--ac)}.ps:hover{background:var(--abg)}.ps.c{font-weight:600}
 .psep{color:var(--t3);font-size:10px}
 .sbox{width:200px;height:28px;background:var(--ib);border:1px solid var(--ibd);border-radius:4px;display:flex;align-items:center;padding:0 8px;gap:5px}.sbox input{flex:1;border:none;outline:none;font-size:12px;background:transparent;color:var(--tx)}
+/* While a recursive subfolder search is running, the box accents and a small dot spins. */
+.sbox.searching{border-color:#60cdff;box-shadow:0 0 0 1px rgba(96,205,255,.35)}
+.sspin{width:12px;height:12px;flex-shrink:0;display:none}
+.sbox.searching .sspin{display:block;border:2px solid rgba(96,205,255,.25);border-top-color:#60cdff;border-radius:50%;animation:sspin .7s linear infinite}
+@keyframes sspin{to{transform:rotate(360deg)}}
 .body{flex:1;display:flex;overflow:hidden}
 .sidebar{width:210px;background:var(--sb);border-right:1px solid var(--bd);overflow-y:auto;padding:6px 0;flex-shrink:0}
 .st{padding:5px 14px;font-size:10px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.6px;display:flex;align-items:center;justify-content:space-between}
@@ -143,6 +148,7 @@ function escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;'
 function fileCategory(e){if(e.isDirectory)return'📁 Folders';if(e.isImage)return'🖼️ Images';if(e.isVideo)return'🎬 Videos';const d=new Set(['txt','pdf','doc','docx','xls','xlsx','csv','md','json','xml','yaml','yml','html','css']);if(d.has(e.ext))return'📄 Documents';return'📎 Other'}
 
 async function init(){
+  wireSearch(); // install the streaming-search IPC listeners once
   qp=await api.quickPaths();
   settings=await api.loadCfg('settings',{theme:'light'});
   bm=await api.loadCfg('bookmarks',{favourites:[],bookmarks:[]});
@@ -204,7 +210,7 @@ async function doClose(){ await saveSession(); api.winClose(); }
 
 // ═══ TABS + PANES ═══
 // newTab creates a tab object (folder + history + per-tab view state) without attaching it to a pane.
-function newTab(p){const id=++tc;const t={id,path:p,hist:[p],hi:0,entries:[],filtered:[],sel:new Set(),search:'',scrollPos:{},vm:'grid',sortBy:'name',sortAsc:true,groupBy:'none'};tabs.push(t);loadFolderSort(t);return id}
+function newTab(p){const id=++tc;const t={id,path:p,hist:[p],hi:0,entries:[],filtered:[],sel:new Set(),search:'',scrollPos:{},vm:'grid',sortBy:'name',sortAsc:true,groupBy:'none',searchResults:[],searchPaths:new Set(),searchId:0,searchActive:false,searchDone:true,searchScanned:0};tabs.push(t);loadFolderSort(t);return id}
 // addTab creates a tab AND shows it in the focused pane (used by "+", new-tab, etc.)
 function addTab(p){const id=newTab(p);assignTabToPane(focusedPaneIdx,id);}
 function closeTab(id){
@@ -337,7 +343,62 @@ function setIconSize(sz){iconSize=sz;for(const p of panes)p.el.className='conten
 function doSort(){const t=ct();sortEnt(t);filterEnt(focusedPane());renderTB();sortPrefs[t.path]={sortBy:t.sortBy,sortAsc:t.sortAsc,groupBy:t.groupBy};api.saveCfg('sortprefs',sortPrefs)}
 function loadFolderSort(t){const dir=t.path;const p=sortPrefs[dir];if(p){t.sortBy=p.sortBy||'name';t.sortAsc=p.sortAsc!==undefined?p.sortAsc:true;t.groupBy=p.groupBy||'none'}else{const nm=dir.split('/').pop()?.toLowerCase()||'';if(nm==='pictures'||nm==='photos'){t.sortBy='modified';t.sortAsc=false}else if(nm==='downloads'){t.sortBy='modified';t.sortAsc=false}else{t.sortBy='name';t.sortAsc=true}t.groupBy='none'}}
 function sortEnt(t){t=t||ct();const sb=t.sortBy,asc=t.sortAsc;t.entries.sort((a,b)=>{if(a.isDirectory!==b.isDirectory)return a.isDirectory?-1:1;let c=0;switch(sb){case'name':c=natCmp(a.name,b.name);break;case'modified':c=a.modifiedMs-b.modifiedMs;break;case'created':c=a.createdMs-b.createdMs;break;case'size':c=a.size-b.size;break;case'type':c=fileCategory(a).localeCompare(fileCategory(b))||natCmp(a.name,b.name);break;case'ext':c=(a.ext||'zzz').localeCompare(b.ext||'zzz')||natCmp(a.name,b.name);break;default:c=natCmp(a.name,b.name)}return asc?c:-c})}
-function filterEnt(pane){pane=pane||focusedPane();const t=tabOfPane(pane);if(!t)return;const q=(t.search||'').toLowerCase();t.filtered=q?t.entries.filter(e=>e.name.toLowerCase().includes(q)):[...t.entries];buildContent(pane)}
+function filterEnt(pane){
+  pane=pane||focusedPane();const t=tabOfPane(pane);if(!t)return;
+  const q=(t.search||'').toLowerCase();
+  if(!q){ t.filtered=[...t.entries]; buildContent(pane); return; }
+  // Instant: current-folder matches. Then append the streamed subfolder results (deduped by path).
+  const local=t.entries.filter(e=>e.name.toLowerCase().includes(q));
+  t.filtered = t.searchResults.length ? local.concat(t.searchResults) : local;
+  buildContent(pane);
+}
+
+// ═══ RECURSIVE STREAMING SEARCH (renderer side) ═══
+// As you type, current-folder matches show instantly (filterEnt); ~250ms later we kick off a
+// cancellable recursive walk in main whose results stream in and append below the local matches.
+let searchSeq=0, _searchTmr=null, _searchSpinTmr=null, _searchRenderTmr=null;
+function onSearchInput(v){ const t=ct(); t.search=v; filterEnt(); clearTimeout(_searchTmr); _searchTmr=setTimeout(()=>startRecursiveSearch(), 250); }
+function cancelSearch(t){
+  t=t||ct(); if(!t) return;
+  if(t.searchId) api.searchCancel(t.searchId);
+  t.searchId=0; t.searchActive=false; t.searchDone=true; t.searchResults=[]; t.searchPaths=new Set(); t.searchScanned=0;
+  clearTimeout(_searchTmr); clearTimeout(_searchSpinTmr); clearTimeout(_searchRenderTmr);
+  const sb=document.querySelector('#abar .sbox'); if(sb) sb.classList.remove('searching');
+}
+function startRecursiveSearch(){
+  const t=ct(); if(!t) return;
+  const q=(t.search||'').trim();
+  // cancel any prior search for this tab
+  if(t.searchId) api.searchCancel(t.searchId);
+  if(!q){ cancelSearch(t); updStat(); return; }
+  const id=++searchSeq;
+  t.searchId=id; t.searchActive=true; t.searchDone=false; t.searchResults=[]; t.searchScanned=0;
+  // dedupe streamed results against the current-folder matches already on screen
+  t.searchPaths=new Set(t.entries.filter(e=>e.name.toLowerCase().includes(q.toLowerCase())).map(e=>e.path));
+  // delayed "searching" affordance — only show it if the search is still running after 400ms
+  clearTimeout(_searchSpinTmr);
+  _searchSpinTmr=setTimeout(()=>{ const cur=ct(); if(cur&&cur.searchId===id&&!cur.searchDone){ const sb=document.querySelector('#abar .sbox'); if(sb) sb.classList.add('searching'); } },400);
+  api.searchStart(id, t.path, q, { maxResults:5000, maxDepth:16 });
+  updStat();
+}
+// One-time IPC wiring (installed from init). Results/progress/done are matched to their owning tab
+// by searchId, so a stale or background-tab search never corrupts the active view.
+function wireSearch(){
+  api.onSearchResult(m=>{
+    const t=tabs.find(x=>x.searchId===m.id); if(!t) return;
+    let added=false;
+    for(const it of m.items){ if(t.searchPaths.has(it.path)) continue; t.searchPaths.add(it.path); t.searchResults.push({...it,size:0,modified:'',modifiedMs:0,searchLoc:relLoc(t.path,it.dir)}); added=true; }
+    if(added && t===ct()){ clearTimeout(_searchRenderTmr); _searchRenderTmr=setTimeout(()=>{ if(ct()===t) filterEnt(); }, 80); }
+  });
+  api.onSearchProgress(m=>{ const t=tabs.find(x=>x.searchId===m.id); if(t){ t.searchScanned=m.scanned; if(t===ct()) updStat(); } });
+  api.onSearchDone(m=>{
+    const t=tabs.find(x=>x.searchId===m.id); if(!t) return;
+    t.searchDone=true; t.searchCapped=m.capped;
+    if(t===ct()){ filterEnt(); updStat(); const sb=document.querySelector('#abar .sbox'); if(sb) sb.classList.remove('searching'); }
+  });
+}
+// Folder of a result relative to the searched root, e.g. "Photos › 2024" (blank if it's in the root).
+function relLoc(root,dir){ if(!dir||dir===root) return ''; let r=dir.startsWith(root)?dir.slice(root.length):dir; return r.split('/').filter(Boolean).join(' › '); }
 
 // ═══ NAV (pane-aware) ═══
 // nav() operates on the focused pane (keeps the signature used by inline onclick handlers).
@@ -351,7 +412,7 @@ async function navPane(paneIdx,dir,addH=true,saveScroll=true){
     // Don't push a duplicate of where we already are — that's what made Back "do nothing".
     if(t.hist[t.hi]!==dir){ t.hist=t.hist.slice(0,t.hi+1); t.hist.push(dir); t.hi=t.hist.length-1; }
   }
-  t.path=dir;t.sel=new Set();t.search='';t._restoreScroll=true;
+  t.path=dir;t.sel=new Set();t.search='';cancelSearch(t);t._restoreScroll=true;
   loadFolderSort(t);
   renderTabs();renderPaneHdrs();
   if(paneIdx===focusedPaneIdx){renderABar();renderSB();renderTB();updTitle();}
@@ -409,7 +470,13 @@ async function refreshAllPanes(){
 }
 if(window.api&&window.api.onRefresh) window.api.onRefresh(refreshAllPanes);
 
-function renderABar(){const t=ct(),parts=t.path.split('/').filter(Boolean);let ph=`<span class="ps${!parts.length?' c':''}" onclick="nav('/')">/</span>`;let acc='';for(let i=0;i<parts.length;i++){acc+='/'+parts[i];ph+=`<span class="psep">›</span><span class="ps${i===parts.length-1?' c':''}" onclick="nav('${esc(acc)}')">${parts[i]}</span>`}document.getElementById('abar').innerHTML=`<button class="nb" onclick="goBack()" ${t.hi<=0?'disabled':''}>←</button><button class="nb" onclick="goFwd()" ${t.hi>=t.hist.length-1?'disabled':''}>→</button><button class="nb" onclick="goUp()" ${t.path==='/'?'disabled':''}>↑</button><div class="pb" onclick="if(event.target===this)editAddress()" title="Click to type a path (Ctrl+L)">${ph}</div><div class="sbox"><span style="font-size:13px;color:var(--t3)">🔍</span><input id="searchBox" value="${t.search||''}" oninput="ct().search=this.value;filterEnt()" onkeydown="event.stopPropagation()" placeholder="Search"></div>`}
+function renderABar(){const t=ct(),parts=t.path.split('/').filter(Boolean);let ph=`<span class="ps${!parts.length?' c':''}" onclick="nav('/')">/</span>`;let acc='';for(let i=0;i<parts.length;i++){acc+='/'+parts[i];ph+=`<span class="psep">›</span><span class="ps${i===parts.length-1?' c':''}" onclick="nav('${esc(acc)}')">${parts[i]}</span>`}document.getElementById('abar').innerHTML=`<button class="nb" onclick="goBack()" ${t.hi<=0?'disabled':''}>←</button><button class="nb" onclick="goFwd()" ${t.hi>=t.hist.length-1?'disabled':''}>→</button><button class="nb" onclick="goUp()" ${t.path==='/'?'disabled':''}>↑</button><div class="pb" onclick="if(event.target===this)editAddress()" title="Click to type a path (Ctrl+L)">${ph}</div><div class="sbox"><span style="font-size:13px;color:var(--t3)">🔍</span><input id="searchBox" value="${t.search||''}" oninput="onSearchInput(this.value)" onkeydown="searchKey(event)" placeholder="Search ${escAttr(t.path.split('/').filter(Boolean).pop()||'/')}"><span class="sspin" title="Searching subfolders"></span></div>`}
+// Enter = search subfolders now (skip the debounce); Escape = clear the search and return to the folder.
+function searchKey(e){
+  e.stopPropagation();
+  if(e.key==='Enter'){ e.preventDefault(); clearTimeout(_searchTmr); startRecursiveSearch(); }
+  else if(e.key==='Escape'){ e.preventDefault(); const t=ct(); t.search=''; cancelSearch(t); const s=document.getElementById('searchBox'); if(s) s.value=''; filterEnt(); updStat(); s&&s.blur(); }
+}
 
 // Editable address bar (Ctrl+L / Alt+D / click empty area) — type or paste a path, Enter navigates.
 function editAddress(){
@@ -452,7 +519,9 @@ function buildContent(pane){
     for(const e of items){
       const p=esc(e.path),sel=t.sel.has(e.name)?'sel':'';
       // data-path / data-isdir drive the mouse-emulated internal drag (see drag section).
-      const data=`data-name="${escAttr(e.name)}" data-path="${escAttr(e.path)}" data-isdir="${e.isDirectory?1:0}"`;
+      // In search results, show the containing subfolder on hover (and in the Modified column).
+      const isResult=e.searchLoc!=null&&e.searchLoc!=='';
+      const data=`data-name="${escAttr(e.name)}" data-path="${escAttr(e.path)}" data-isdir="${e.isDirectory?1:0}"${isResult?` title="${escAttr(e.searchLoc+' › '+e.name)}"`:''}`;
       // External drops (from Nemo/desktop) onto a folder tile still use HTML5 DnD.
       const dropAttr=e.isDirectory?`ondragover="dov(event)" ondragleave="dlv(event)" ondrop="drp(event,'${p}')"`:''
       const click=`onclick="event.stopPropagation();sel(event,'${esc(e.name)}')" ondblclick="openItem('${p}',${e.isDirectory},${e.isImage})" oncontextmenu="showCtx(event,'${p}',${e.isDirectory},${e.isImage},${e.isVideo||false})"`;
@@ -468,7 +537,7 @@ function buildContent(pane){
         html+=`<div class="ti ${sel}" ${data} ${click} ${dropAttr}><div class="th">${imgTag}</div><div class="tinfo"><div class="tname">${e.name}</div><div class="tmeta">${e.isDirectory?'Folder':fmt(e.size)}</div><div class="tdate">${e.modified}</div></div></div>`;
       } else {
         const tp=e.isDirectory?'Folder':e.isVideo?'Video':e.ext?(e.ext.toUpperCase()+' File'):'File';
-        html+=`<div class="li ${sel}" ${data} ${click} ${dropAttr}><div class="ln">${imgTag}<span>${e.name}</span></div><span class="lm">${e.isDirectory?'':fmt(e.size)}</span><span class="lm">${tp}</span><span class="lm">${e.modified}</span></div>`;
+        html+=`<div class="li ${sel}" ${data} ${click} ${dropAttr}><div class="ln">${imgTag}<span>${e.name}</span></div><span class="lm">${e.isDirectory?'':fmt(e.size)}</span><span class="lm">${tp}</span><span class="lm">${isResult?('📁 '+e.searchLoc):e.modified}</span></div>`;
       }
     }
     if(isGrid)html+='</div>';
@@ -601,7 +670,16 @@ function selAbove(){const t=ct(),names=t.filtered.map(e=>e.name),cur=[...t.sel][
 function selBelow(){const t=ct(),names=t.filtered.map(e=>e.name),cur=[...t.sel].pop();if(!cur)return;const idx=names.indexOf(cur);for(let i=idx;i<names.length;i++)t.sel.add(names[i]);syncSelectionCSS()}
 
 function updTitle(){document.getElementById('ttl').textContent=(ct().path.split('/').filter(Boolean).pop()||'/')+ ' — File Explorer'}
-function updStat(){const t=ct();const imgs=t.filtered.filter(e=>e.isImage).length,dirs=t.filtered.filter(e=>e.isDirectory).length,files=t.filtered.length-dirs;let s=`${t.filtered.length} items`;if(dirs)s+=` · ${dirs} folders`;if(files)s+=` · ${files} files`;if(imgs)s+=` · ${imgs} images`;if(t.sel.size)s+=`  |  ${t.sel.size} selected`;document.getElementById('status').textContent=s}
+function updStat(){const t=ct();
+  // Search status: "Searching … N found" while running, "N results" when done, capped note if hit.
+  if((t.search||'').trim()){
+    let s;
+    if(!t.searchDone) s=`🔍 Searching “${t.search}” … ${t.filtered.length} found`;
+    else s=`🔍 ${t.filtered.length} result${t.filtered.length===1?'':'s'} for “${t.search}”${t.searchCapped?' (limit reached — narrow your search)':''}`;
+    if(t.sel.size)s+=`  |  ${t.sel.size} selected`;
+    document.getElementById('status').textContent=s; return;
+  }
+  const imgs=t.filtered.filter(e=>e.isImage).length,dirs=t.filtered.filter(e=>e.isDirectory).length,files=t.filtered.length-dirs;let s=`${t.filtered.length} items`;if(dirs)s+=` · ${dirs} folders`;if(files)s+=` · ${files} files`;if(imgs)s+=` · ${imgs} images`;if(t.sel.size)s+=`  |  ${t.sel.size} selected`;document.getElementById('status').textContent=s}
 
 // Resource monitor — updates every 3 seconds
 setInterval(async()=>{
