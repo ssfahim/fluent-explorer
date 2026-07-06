@@ -795,6 +795,13 @@ ipcMain.handle('cfg:save', async (_,n,d) => { try{await fs.promises.writeFile(cf
 ipcMain.handle('session:save', async (_, data) => {
   try { await fs.promises.writeFile(cfgFile('session'), JSON.stringify(data, null, 2)); return { ok: 1 }; } catch { return { ok: 0 }; }
 });
+// SYNCHRONOUS save — called from the renderer's beforeunload/pagehide so the session is
+// flushed to disk before the window is destroyed (WM close / quit / reload). This is the
+// safety net that stops open tabs + history being lost on an unclean close.
+ipcMain.on('session:saveSync', (e, data) => {
+  try { fs.writeFileSync(cfgFile('session'), JSON.stringify(data, null, 2)); } catch {}
+  e.returnValue = 1;
+});
 ipcMain.handle('session:load', async () => {
   try { return JSON.parse(await fs.promises.readFile(cfgFile('session'), 'utf8')); } catch { return null; }
 });

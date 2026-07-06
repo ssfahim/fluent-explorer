@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld('api', {
   loadCfg: (n, def) => ipcRenderer.invoke('cfg:load', n, def),
   saveCfg: (n, d) => ipcRenderer.invoke('cfg:save', n, d),
   sessionSave: d => ipcRenderer.invoke('session:save', d),
+  sessionSaveSync: d => { try { return ipcRenderer.sendSync('session:saveSync', d); } catch { return 0; } },
   sessionLoad: () => ipcRenderer.invoke('session:load'),
   memoryLoad: () => ipcRenderer.invoke('memory:load'),
   memorySave: d => ipcRenderer.invoke('memory:save', d),

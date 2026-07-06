@@ -168,9 +168,10 @@ async function init(){
   applyTheme();
   iconSize=settings.iconSize||'md';
 
-  // Create the tab objects to restore
-  const restorePaths=(session&&session.tabs&&session.tabs.length)?session.tabs:[qp.home];
-  const ids=restorePaths.map(tp=>newTab(tp));
+  // Create the tab objects to restore. Session tabs may be rich objects {path,hist,hi,vm}
+  // (current format) or bare path strings (older sessions) — handle both.
+  const restoreTabs=(session&&session.tabs&&session.tabs.length)?session.tabs:[qp.home];
+  const ids=restoreTabs.map(s=>{const p=(typeof s==='string')?s:((s&&s.path)||qp.home);return newTab(p,(s&&typeof s==='object')?s:null);});
 
   // Pane 0 (always present)
   const p0tab=ids[(session&&session.panes&&session.panes[0])||0]||ids[0];
@@ -191,10 +192,17 @@ async function init(){
 }
 function applyTheme(){document.body.className=settings.theme==='dark'?'dark':''}
 
-function sessionData(){return {tabs:tabs.map(t=>t.path),split:splitOn,panes:panes.map(p=>tabs.findIndex(t=>t.id===p.tabId))};}
+// Save each tab's FULL state — path + back/forward history + view mode — so a restart
+// restores exactly where every tab was (not just its current folder).
+function sessionData(){return {tabs:tabs.map(t=>({path:t.path,hist:t.hist,hi:t.hi,vm:t.vm})),split:splitOn,panes:panes.map(p=>tabs.findIndex(t=>t.id===p.tabId))};}
 async function saveSession(){try{await api.sessionSave(sessionData());}catch{}}
 let _sessTmr=null;
-function saveSessionSoon(){clearTimeout(_sessTmr);_sessTmr=setTimeout(saveSession,600);}
+function saveSessionSoon(){clearTimeout(_sessTmr);_sessTmr=setTimeout(saveSession,250);}
+// Guaranteed save on ANY window close (WM X, quit, reload) — SYNCHRONOUS IPC so the file
+// is written before the window is destroyed. This is what stops history/tabs being lost.
+addEventListener('beforeunload',function(){try{api.sessionSaveSync&&api.sessionSaveSync(sessionData());}catch{}});
+addEventListener('pagehide',function(){try{api.sessionSaveSync&&api.sessionSaveSync(sessionData());}catch{}});
+document.addEventListener('visibilitychange',function(){if(document.visibilityState==='hidden')saveSession();});
 
 async function clearSession(){
   if(!confirm('Clear session history and start fresh?\nAll tabs will close and Home will open.'))return;
@@ -210,9 +218,12 @@ async function doClose(){ await saveSession(); api.winClose(); }
 
 // ═══ TABS + PANES ═══
 // newTab creates a tab object (folder + history + per-tab view state) without attaching it to a pane.
-function newTab(p){const id=++tc;const t={id,path:p,hist:[p],hi:0,entries:[],filtered:[],sel:new Set(),search:'',scrollPos:{},vm:'grid',sortBy:'name',sortAsc:true,groupBy:'none',searchResults:[],searchPaths:new Set(),searchId:0,searchActive:false,searchDone:true,searchScanned:0};tabs.push(t);loadFolderSort(t);return id}
+function newTab(p,st){const id=++tc;const t={id,path:p,hist:[p],hi:0,entries:[],filtered:[],sel:new Set(),search:'',scrollPos:{},vm:'grid',sortBy:'name',sortAsc:true,groupBy:'none',searchResults:[],searchPaths:new Set(),searchId:0,searchActive:false,searchDone:true,searchScanned:0};
+  // Restore a tab's saved back/forward history + view (from the session), if given.
+  if(st&&typeof st==='object'){if(Array.isArray(st.hist)&&st.hist.length){t.hist=st.hist.slice();t.hi=Math.min(Math.max(0,st.hi|0),t.hist.length-1);t.path=t.hist[t.hi]||p;}if(st.vm)t.vm=st.vm;}
+  tabs.push(t);loadFolderSort(t);return id}
 // addTab creates a tab AND shows it in the focused pane (used by "+", new-tab, etc.)
-function addTab(p){const id=newTab(p);assignTabToPane(focusedPaneIdx,id);}
+function addTab(p){const id=newTab(p);assignTabToPane(focusedPaneIdx,id);saveSessionSoon();}
 function closeTab(id){
   const minTabs=splitOn?2:1; if(tabs.length<=minTabs)return;
   const i=tabs.findIndex(t=>t.id===id); if(i<0)return;
