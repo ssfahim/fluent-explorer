@@ -225,6 +225,23 @@ function createPhotosWindow(folder, imagePath, sortedImagePaths) {
   win.on('closed', () => { photosWins.delete(win); });
 }
 
+// Single instance: a 2nd launch (e.g. the dashboard opening an image via `--photos folder
+// image`) is routed INTO the already-running app instead of spawning another Electron —
+// instant, and no process pileup. If no instance is running, this one becomes it.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+app.on('second-instance', (event, argv) => {
+  const i = argv.indexOf('--photos');
+  if (i >= 0) {
+    createPhotosWindow(argv[i + 1] || path.join(HOME, 'Pictures'), argv[i + 2] || '');
+  } else if (explorerWin) {
+    try { if (explorerWin.isMinimized()) explorerWin.restore(); explorerWin.focus(); } catch {}
+  } else {
+    createExplorerWindow();
+  }
+});
 app.whenReady().then(() => {
   // Remove the default application menu — it's what provides the Ctrl/Cmd+R "reload" accelerator
   // that was blowing away the renderer and dumping the user back on Home. The app drives all of
@@ -246,6 +263,7 @@ app.whenReady().then(() => {
   checkPriorOOM();          // also try the kernel log for the *reason* (best-effort; needs journal perms)
   startMemorySampler();     // log the per-process memory curve + heartbeat the liveness marker
 });
+}  // end single-instance guard
 // Clean-exit path: clear the liveness marker so the NEXT launch knows we shut down properly.
 app.on('window-all-closed', () => { markCleanExit(); app.quit(); });
 app.on('before-quit', () => markCleanExit());
