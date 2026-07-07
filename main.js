@@ -120,8 +120,10 @@ const isPhotosOnly = process.argv.includes('--photos');
 
 // ══════════════ GLOBAL STATE ══════════════
 let globalClipboard = { paths: [], action: '' };
-// Stored sorted image list for Photos to pick up (eliminates race condition)
-let pendingPhotosData = null; // { sortedPaths:[], startImage:'' }
+// Stored sorted image list for Photos to pick up, keyed by the target BrowserWindow's id.
+// Keying per-window (instead of one shared slot) is what lets multiple Photos windows open
+// back-to-back without racing each other for the same pending data.
+const pendingPhotosDataByWin = new Map(); // winId -> { sortedPaths:[], startImage:'' }
 
 ipcMain.handle('clip:set', (_, d) => {
   globalClipboard = d;
@@ -169,11 +171,26 @@ ipcMain.handle('clip:get', () => {
   return globalClipboard;
 });
 
-// Photos requests the sorted list — no race condition
-ipcMain.handle('photos:getSortedList', () => {
-  const data = pendingPhotosData;
-  pendingPhotosData = null; // consume it
-  return data;
+// Photos requests the sorted list — keyed per-window, so it's a one-shot per Photos window
+// instead of a single shared slot that a second window could steal or clobber.
+// When nothing was pre-staged for this window (e.g. it was opened via the single-instance
+// second-instance handler, which only has a folder + image path, no sorted list), fall back
+// to scanning that window's own folder so it still gets a navigable, sorted image list.
+ipcMain.handle('photos:getSortedList', async (event, folder) => {
+  const winId = BrowserWindow.fromWebContents(event.sender)?.id;
+  const data = winId != null ? pendingPhotosDataByWin.get(winId) : null;
+  if (winId != null) pendingPhotosDataByWin.delete(winId); // consume it
+  if (data) return data;
+  if (!folder) return null;
+  try {
+    const dirents = await fs.promises.readdir(folder, { withFileTypes: true });
+    const sortedPaths = dirents
+      .filter(d => !d.isDirectory() && !d.name.startsWith('.') && IMG_EXT.has(path.extname(d.name).toLowerCase().slice(1)))
+      .map(d => d.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
+      .map(name => path.join(folder, name));
+    return sortedPaths.length ? { sortedPaths, startImage: '' } : null;
+  } catch { return null; }
 });
 
 // Turn the built-in Ctrl/Cmd+R "reload whole renderer" into an in-app folder refresh.
@@ -209,20 +226,26 @@ function createExplorerWindow() {
 }
 
 function createPhotosWindow(folder, imagePath, sortedImagePaths) {
-  // Store the sorted list BEFORE creating the window — Photos will request it on init
-  if (sortedImagePaths && sortedImagePaths.length) {
-    pendingPhotosData = { sortedPaths: sortedImagePaths, startImage: imagePath };
-  }
   const win = new BrowserWindow({
     width: 1100, height: 750, minWidth: 700, minHeight: 500, frame: false,
     webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') },
     icon: path.join(__dirname, 'icon.svg'), backgroundColor: '#111111'
   });
+  // Store the sorted list BEFORE loading — Photos will request it on init, keyed to THIS
+  // window's id so a second Photos window opening around the same time can't steal/clobber it.
+  if (sortedImagePaths && sortedImagePaths.length) {
+    pendingPhotosDataByWin.set(win.id, { sortedPaths: sortedImagePaths, startImage: imagePath });
+  }
   win.loadFile('photos.html', { query: { folder: folder || '', image: imagePath || '' } });
   guardReload(win);
   wireFullScreen(win);
   photosWins.add(win);
-  win.on('closed', () => { photosWins.delete(win); });
+  win.on('closed', () => { photosWins.delete(win); pendingPhotosDataByWin.delete(win.id); });
+  // Make sure a newly opened Photos window actually surfaces — without this a second window
+  // can load behind the first (or behind the Explorer window) instead of becoming usable.
+  win.once('ready-to-show', () => {
+    try { win.show(); win.focus(); if (win.moveTop) win.moveTop(); } catch {}
+  });
 }
 
 // Single instance: a 2nd launch (e.g. the dashboard opening an image via `--photos folder

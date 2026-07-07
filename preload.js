@@ -47,7 +47,7 @@ contextBridge.exposeInMainWorld('api', {
   getAppsForFile: p => ipcRenderer.invoke('fs:getAppsForFile', p),
   openWith: (p, d) => ipcRenderer.invoke('fs:openWith', p, d),
   openPhotos: (f, img, sorted) => ipcRenderer.invoke('app:openPhotos', f, img, sorted),
-  getSortedList: () => ipcRenderer.invoke('photos:getSortedList'),
+  getSortedList: folder => ipcRenderer.invoke('photos:getSortedList', folder),
   nativeDrag: p => ipcRenderer.send('native-drag', p),
   clipSet: d => ipcRenderer.invoke('clip:set', d),
   clipGet: () => ipcRenderer.invoke('clip:get'),

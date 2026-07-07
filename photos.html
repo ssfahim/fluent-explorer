@@ -95,11 +95,13 @@ async function init(){
 
   renderBar();
 
-  // Request sorted image list from main process (set by Explorer before creating this window)
-  const sortedData = await api.getSortedList();
+  // Request sorted image list from main process. If Explorer pre-staged one for this exact
+  // window, that's returned as-is; otherwise main falls back to scanning curFolder itself
+  // (e.g. a window opened via the OS/dashboard --photos launch, with no injected list).
+  const sortedData = await api.getSortedList(curFolder);
 
   if(sortedData && sortedData.sortedPaths && sortedData.sortedPaths.length) {
-    // Explorer provided a sorted list — use it directly (preserves exact sort order)
+    // Explorer (or main's folder-scan fallback) provided a sorted list — use it directly
     images = sortedData.sortedPaths.map(p => {
       const name = p.split('/').pop();
       const ext = name.split('.').pop().toLowerCase();
