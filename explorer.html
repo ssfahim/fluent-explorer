@@ -722,7 +722,19 @@ function goFwd(){const t=ct();if(t.hi<t.hist.length-1){t.hi++;nav(t.hist[t.hi],f
 function goUp(){const t=ct();if(t.path!=='/')nav(t.path.replace(/\/[^/]+\/?$/,'')||'/')}
 function setVM(m){const t=ct();if(t)t.vm=m;renderTB();buildContent(focusedPane())}
 function setSortCol(col){const t=ct();if(!t)return;if(t.sortBy===col)t.sortAsc=!t.sortAsc;else{t.sortBy=col;t.sortAsc=true}doSort()}
-async function newFolder(){const n=prompt('New folder name:');if(n){await api.mkdir(ct().path+'/'+n);await loadDir()}}
+// Windows-feel: update the in-memory listing + re-render instead of re-reading the whole folder.
+// A full readdir of a 10k-file ntfs-3g folder after every op is what made delete/rename/paste feel slow.
+const IMG_RE=/\.(jpg|jpeg|png|gif|bmp|webp|svg|ico|tiff|avif|heic)$/i;
+const VID_RE=/\.(mp4|avi|mkv|mov|webm|flv|wmv|m4v|mpg|mpeg|3gp)$/i;
+function dropEntries(names){ const t=ct(); const set=new Set(names); t.entries=t.entries.filter(e=>!(set.has(e.name)||set.has(e.path))); filterEnt(focusedPane()); }
+async function addEntries(paths){ const t=ct();
+  for(const p of paths){ const r=await api.stat(p); if(!r||!r.ok)continue; const name=p.split('/').pop(); const ext=name.includes('.')?name.split('.').pop().toLowerCase():'';
+    t.entries=t.entries.filter(e=>e.path!==p);
+    t.entries.push({name,path:p,isDirectory:!!r.stats.isDirectory,isImage:IMG_RE.test(name),isVideo:VID_RE.test(name),ext,size:r.stats.size,modified:(r.stats.modified||'').split('T')[0],modifiedMs:Date.parse(r.stats.modified)||0,createdMs:Date.parse(r.stats.created)||0,permissions:r.stats.permissions});
+  }
+  sortEnt(t); filterEnt(focusedPane());
+}
+async function newFolder(){const n=prompt('New folder name:');if(n){const np=ct().path+'/'+n;await api.mkdir(np);await addEntries([np])}}
 function renameSel(){const t=ct(),name=[...t.sel][0];if(!name)return;startRename(name)}
 // In-place rename overlay (Windows Explorer F2 behaviour): edit the label, Enter commits, Esc cancels.
 function startRename(name){
@@ -735,8 +747,10 @@ function startRename(name){
   const dot=name.lastIndexOf('.'); try{ inp.setSelectionRange(0, dot>0?dot:name.length); }catch{}
   let done=false;
   const commit=async(save)=>{ if(done)return; done=true; const nn=inp.value.trim();
-    if(save&&nn&&nn!==name){ const r=await api.smartRename(e.path,nn); if(r&&r.error)alert('Rename failed: '+r.error); }
-    await loadDir();
+    if(save&&nn&&nn!==name){ const r=await api.smartRename(e.path,nn);
+      if(r&&r.error){ alert('Rename failed: '+r.error); }
+      else { const dir=e.path.slice(0,e.path.lastIndexOf('/')); e.name=nn; e.path=dir+'/'+nn; t.sel=new Set([nn]); } }
+    sortEnt(t); filterEnt(focusedPane());
   };
   inp.addEventListener('keydown',ev=>{ ev.stopPropagation(); if(ev.key==='Enter'){ ev.preventDefault(); commit(true); } else if(ev.key==='Escape'){ ev.preventDefault(); commit(false); } });
   inp.addEventListener('blur',()=>commit(true));
@@ -744,17 +758,17 @@ function startRename(name){
   inp.addEventListener('click',ev=>ev.stopPropagation());
   inp.addEventListener('dblclick',ev=>ev.stopPropagation());
 }
-async function deleteSel(){const t=ct();if(!t.sel.size)return;if(!confirm(`Move ${t.sel.size} item(s) to trash?`))return;for(const n of t.sel){const e=t.entries.find(x=>x.name===n);if(e)await api.trash(e.path)}t.sel=new Set();await loadDir()}
-async function permDeleteSel(){const t=ct();if(!t.sel.size)return;const paths=[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean);const r=await api.permanentDelete(paths);if(r.ok){t.sel=new Set();await loadDir()}}
+async function deleteSel(){const t=ct();if(!t.sel.size)return;if(!confirm(`Move ${t.sel.size} item(s) to trash?`))return;const names=[...t.sel];for(const n of names){const e=t.entries.find(x=>x.name===n);if(e)await api.trash(e.path)}t.sel=new Set();dropEntries(names)}
+async function permDeleteSel(){const t=ct();if(!t.sel.size)return;const names=[...t.sel];const paths=names.map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean);const r=await api.permanentDelete(paths);if(r.ok){t.sel=new Set();dropEntries(names)}}
 async function cutSel(){const t=ct();const paths=[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean);if(!paths.length)return;await api.clipSet({paths,action:'cut'})}
 async function copySel(){const t=ct();const paths=[...t.sel].map(n=>t.entries.find(x=>x.name===n)?.path).filter(Boolean);if(!paths.length)return;await api.clipSet({paths,action:'copy'})}
 async function pasteHere(){
   const clip=await api.clipGet();
   if(!clip||!clip.paths||!clip.paths.length)return;
-  const successPaths=[];
+  const successPaths=[], destPaths=[];
   for(const p of clip.paths){
     const r=await api.smartCopy(p,ct().path);
-    if(r&&r.ok&&r.action!=='skipped') successPaths.push(p);
+    if(r&&r.ok&&r.action!=='skipped'){ successPaths.push(p); const dn=(r.action==='kept_both'&&r.newName)?r.newName:p.split('/').pop(); destPaths.push(ct().path+'/'+dn); }
     else if(!r||!r.ok) alert('Failed to paste: '+p.split('/').pop()+'\n'+(r?.error||'Unknown error'));
   }
   if(clip.action==='cut'){
@@ -764,7 +778,7 @@ async function pasteHere(){
     }
     await api.clipSet({paths:[],action:''});
   }
-  await loadDir();
+  await addEntries(destPaths); // show pasted files instantly (stats only the new files, not the whole dir)
 }
 async function toggleTheme(){settings.theme=settings.theme==='dark'?'light':'dark';applyTheme();renderTB();await api.saveCfg('settings',settings)}
 
@@ -946,8 +960,8 @@ function hideCtx(){document.getElementById('ctx').style.display='none'}
 // Use mousedown instead of click — click fires after contextmenu and hides the menu immediately
 document.addEventListener('mousedown',e=>{if(e.button===0&&!e.target.closest('.ctx'))hideCtx()});
 function renCtx(p){hideCtx();startRename(p.split('/').pop())}
-async function delCtx(p){hideCtx();if(confirm(`Trash "${p.split('/').pop()}"?`)){await api.trash(p);ct().sel=new Set();await loadDir()}}
-async function permDelCtx(p){hideCtx();await api.permanentDelete([p]);ct().sel=new Set();await loadDir()}
+async function delCtx(p){hideCtx();if(confirm(`Trash "${p.split('/').pop()}"?`)){await api.trash(p);ct().sel=new Set();dropEntries([p])}}
+async function permDelCtx(p){hideCtx();await api.permanentDelete([p]);ct().sel=new Set();dropEntries([p])}
 async function showProps(p){hideCtx();const r=await api.stat(p);if(r.ok){const s=r.stats;alert(`Path: ${p}\nSize: ${fmt(s.size)}\nCreated: ${s.created?.split('T')[0]||'N/A'}\nModified: ${s.modified?.split('T')[0]||'N/A'}\nPermissions: ${s.permissions}`)}}
 async function addFavP(p){if(!bm.favourites.includes(p)){bm.favourites.push(p);await api.saveCfg('bookmarks',bm);renderSB()}hideCtx()}
 async function addBmP(p){if(!bm.bookmarks.includes(p)){bm.bookmarks.push(p);await api.saveCfg('bookmarks',bm);renderSB()}hideCtx()}
