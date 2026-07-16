@@ -19,6 +19,8 @@ if (process.env.FLUENT_GPU_RASTER) {
   app.commandLine.appendSwitch('enable-zero-copy');
 } else if (!process.env.FLUENT_GPU) {
   app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch('disable-gpu');            // keep the crashy NVIDIA GL driver out of the GPU process entirely
+  app.commandLine.appendSwitch('disable-gpu-compositing');
 }
 const path = require('path');
 const fs = require('fs');
