@@ -9,15 +9,16 @@ const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net, nativeImage, 
 // log". We detect that case separately by scanning the kernel log on next launch (see below).
 try { crashReporter.start({ uploadToServer: false }); } catch {}
 
-// GPU policy. On integrated GPUs (e.g. Mint) aggressively forcing GPU rasterization + zero-copy made
-// the GPU process accumulate image textures and crash the whole app — even with plenty of free RAM.
-// So those switches are now OPT-IN (FLUENT_GPU_RASTER=1) instead of the default. FLUENT_NO_GPU=1 still
-// disables hardware acceleration entirely. Default = let Chromium decide (safest on weak drivers).
-if (process.env.FLUENT_NO_GPU) {
-  app.disableHardwareAcceleration();
-} else if (process.env.FLUENT_GPU_RASTER) {
+// GPU policy. EVIDENCE: Crashpad dumps (~/.config/Electron/Crashpad) are full of NVIDIA GL symbols and
+// the app died at random image counts (1475/1988/4938/8986) with ~9GB RAM free and ~230MB used — i.e.
+// the *GPU process* crashes inside NVIDIA's GL driver while paging many images, not OOM. A file/photo
+// viewer doesn't need a GPU process, so default to software compositing: no GPU process = no crash.
+// Opt back in with FLUENT_GPU=1 (Chromium default accel) or FLUENT_GPU_RASTER=1 (also force raster).
+if (process.env.FLUENT_GPU_RASTER) {
   app.commandLine.appendSwitch('enable-gpu-rasterization');
   app.commandLine.appendSwitch('enable-zero-copy');
+} else if (!process.env.FLUENT_GPU) {
+  app.disableHardwareAcceleration();
 }
 const path = require('path');
 const fs = require('fs');
@@ -507,7 +508,7 @@ const PERF_LOG = path.join(HOME, '.cache', 'winex-performance.log');
 let debugLogStream = null, perfLogStream = null;
 
 function dbg(obj) {
-  if (!debugLogStream) { try { debugLogStream = fs.createWriteStream(DEBUG_LOG, { flags: 'a' }); } catch { return; } let ver='?'; try { ver = require('./package.json').version; } catch {} debugLogStream.write(JSON.stringify({ event: 'app_start', version: ver, gpu: !process.env.FLUENT_NO_GPU, ts: Date.now() }) + '\n'); }
+  if (!debugLogStream) { try { debugLogStream = fs.createWriteStream(DEBUG_LOG, { flags: 'a' }); } catch { return; } let ver='?'; try { ver = require('./package.json').version; } catch {} debugLogStream.write(JSON.stringify({ event: 'app_start', version: ver, gpu: !!(process.env.FLUENT_GPU || process.env.FLUENT_GPU_RASTER), ts: Date.now() }) + '\n'); }
   debugLogStream.write(JSON.stringify({ ...obj, ts: Date.now() }) + '\n');
 }
 function perfLog(obj) {
