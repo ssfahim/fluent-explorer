@@ -111,6 +111,22 @@ const CACHE = path.join(HOME, '.cache', 'winex-thumbs');
 const CFG = path.join(HOME, '.config');
 try { fs.mkdirSync(CACHE, { recursive: true }); } catch {}
 
+// Thumb/display cache grows forever (a thumb + a display copy per image, plus fresh entries for every
+// copied file) → "duplicates in the cache" + slow loading. Prune oldest to a size cap on startup.
+// ponytail: sync stat sweep at startup; fine for a disposable regenerable cache, revisit if it lags.
+function pruneCache(maxMB = 600) {
+  try {
+    const files = fs.readdirSync(CACHE).filter(f => f.endsWith('.jpg')).map(f => {
+      const p = path.join(CACHE, f); const s = fs.statSync(p); return { p, size: s.size, mtime: s.mtimeMs };
+    });
+    let total = files.reduce((a, f) => a + f.size, 0);
+    const cap = maxMB * 1048576;
+    if (total <= cap) return;
+    files.sort((a, b) => a.mtime - b.mtime); // oldest first
+    for (const f of files) { if (total <= cap) break; try { fs.unlinkSync(f.p); total -= f.size; } catch {} }
+  } catch {}
+}
+
 const IMG_EXT = new Set(['jpg','jpeg','png','gif','bmp','webp','svg','ico','tiff','avif','heic']);
 const VID_EXT = new Set(['mp4','avi','mkv','mov','webm','flv','wmv','m4v','mpg','mpeg','3gp']);
 
@@ -285,6 +301,7 @@ app.whenReady().then(() => {
   detectPriorUncleanExit(); // did the LAST session die without a clean shutdown? (OOM-kill etc.)
   checkPriorOOM();          // also try the kernel log for the *reason* (best-effort; needs journal perms)
   startMemorySampler();     // log the per-process memory curve + heartbeat the liveness marker
+  pruneCache();             // keep the thumb/display cache bounded
 });
 }  // end single-instance guard
 // Clean-exit path: clear the liveness marker so the NEXT launch knows we shut down properly.
